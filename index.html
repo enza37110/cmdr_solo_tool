@@ -67,6 +67,13 @@ input,select{background:#0e1014;color:var(--tx);border:1px solid var(--line);bor
 .seg{display:flex;gap:4px;flex-wrap:wrap}
 .seg .chip{font-size:13px;padding:6px 10px}
 .err{color:#ff8a80;font-size:13px;margin-top:6px}
+.prog{margin-top:10px;background:#2b2510;border:1px solid #c9a227;border-radius:10px;padding:12px}
+.prog .pl{color:#ffd54f;font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px}
+.prog .ps{color:#f3e5ab;font-size:12px;margin-top:6px}
+.pbar{height:10px;background:#463b14;border-radius:5px;margin-top:8px;overflow:hidden}
+.pbar div{height:100%;background:linear-gradient(90deg,#ffd54f,#ffb300);transition:width .3s}
+.spin{width:18px;height:18px;border:3px solid #ffd54f;border-top-color:transparent;border-radius:50%;display:inline-block;animation:spin .8s linear infinite;flex:0 0 auto}
+@keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
@@ -283,7 +290,8 @@ async function resolveCards(entries, onProg){
     need.push(e);
   }
   const total=need.length;
-  const prog=()=>onProg&&onProg(`カード情報を取得中… ${need.filter(e=>out.has(keyOf(e))).length}/${total}`);
+  const tried=new Set();
+  const prog=()=>onProg&&onProg(`カード情報を取得中… ${need.filter(e=>out.has(keyOf(e))||tried.has(keyOf(e))).length}/${total}`);
   const save=()=>{ for(const [k,d] of out){ if(!basicByName(k)) cache[k]=d; } store.set('cardcache', cache); };
   prog();
   // 英語名つき → collection API でまとめて取得
@@ -324,7 +332,7 @@ async function resolveCards(entries, onProg){
     }
     if(c) out.set(keyOf(e), defFromScry(c, e.ja));
     else if(err) failed.add(keyOf(e));
-    prog(); save();
+    tried.add(keyOf(e)); prog(); save();
   }
   save();
   return {map:out, failed:[...failed]};
@@ -391,6 +399,7 @@ function moveTo(c, zone, opt={}){
     if(isPW(c.def)) c.counters.loyalty=num(c.def.loyalty);
     queueTrig(c,'etb');
     if(isLand(c.def)) fireFor(G.players[c.ctrl],'landfall');
+    if(isCreature(c.def)) fireCreatureEnters(c);
   }
 }
 function drawN(p,n){
@@ -495,7 +504,7 @@ function applyDamage(src, tg, n, combat){
     else { c.dmg+=n; if(hasKw(src,'Deathtouch')) c.dtHit=true; }
     log(`${nm(src)} → ${nm(c)}に${n}点`);
   }
-  if(hasKw(src,'Lifelink') && sp && !sp.lost) sp.life+=n;
+  if(hasKw(src,'Lifelink') && sp && !sp.lost) gainLife(sp,n);
 }
 
 /* ---------- 戦闘 ---------- */
@@ -707,7 +716,10 @@ function parseEffects(text){
     fx.push({do:'counter', n:toN(m[1]), mode:/each/i.test(m[2])?'each':/target/i.test(m[2])?'target':'self'});
   if((m=s.match(/target creature (?:you control )?gets \+(\d+)\/\+(\d+)(?: and gains ([^.]+?))? until end of turn/i))) fx.push({do:'pump', p:+m[1], t:+m[2], kw:kwIn(m[3])});
   if((m=s.match(/(?:^|[.\n] ?|, then |and |you )draws? (a|one|two|three|four|five|\d+) cards?/i)) && !/target player draws|each player draws|each opponent draws/i.test(s)) fx.push({do:'draw', n:toN(m[1])});
-  if((m=s.match(/you gain (\d+) life/i))) fx.push({do:'gain', n:+m[1]});
+  if((m=s.match(/you (?:may )?gain (\d+) life/i))) fx.push({do:'gain', n:+m[1]});
+  if(/you (?:may )?gain life equal to (?:that creature's|its|the entering creature's) toughness/i.test(s)) fx.push({do:'gainTough'});
+  if(/\bpopulate\b/i.test(s)) fx.push({do:'populate'});
+  if(/\bproliferate\b/i.test(s)) fx.push({do:'proliferate'});
   if((m=s.match(/each opponent loses (\d+) life/i))) fx.push({do:'drain', n:+m[1]});
   if((m=s.match(/(?:^|[.\n] ?|, then |and |you )mill (a|one|two|three|four|five|six|\d+) cards?/i))) fx.push({do:'mill', n:toN(m[1])});
   if((m=s.match(/each opponent discards (a|an|one|two|\d+) cards?/i))) fx.push({do:'discardOpp', n:toN(m[1])});
@@ -722,7 +734,11 @@ function parseTriggers(def){
     const l=raw.trim(); if(!/^(when|whenever|at the beginning)/i.test(l)) continue;
     let ev=null, cond={}, m;
     const head=l.split(',')[0];
-    if(/\benters\b/i.test(head) && !/^whenever (another|a |an |one or more|a land)/i.test(head) && /^(when|whenever)/i.test(head)) ev='etb';
+    if(/^whenever (another |a |one or more )?(other )?(nontoken )?creatures? (you control )?enters?\b/i.test(head) || /^whenever (another |a )?(nontoken )?creature enters( the battlefield)? under your control/i.test(head)){
+      ev='cre_etb'; cond.other=/another|other/i.test(head); cond.yours=/you control|under your control/i.test(head); cond.nontoken=/nontoken/i.test(head);
+    }
+    else if(/^whenever you gain life/i.test(head)) ev='gainlife';
+    else if(/\benters\b/i.test(head) && !/^whenever (another|a |an |one or more|a land)/i.test(head) && /^(when|whenever)/i.test(head)) ev='etb';
     else if(/^whenever a land( you control)? enters/i.test(head)) ev='landfall';
     else if(/^whenever [^,]*\battacks\b/i.test(head) && !/^whenever (a|another|one or more) (creature|creatures)/i.test(head)) ev='attack';
     else if(/^at the beginning of your upkeep/i.test(head)) ev='upkeep';
@@ -814,7 +830,7 @@ const FX_JA={draw:e=>`カードを${e.n}枚引く`, gain:e=>`${e.n}点のライ�
   damage:e=>`${e.n}点のダメージ（${e.mode}）`, token:e=>`${e.p}/${e.t}のトークンを${e.n}体`, treasure:e=>`宝物を${e.n}個`,
   counter:e=>`+1/+1カウンターを${e.n}個（${{each:'自軍全体',self:'自身',target:'対象',opp:'相手のクリーチャー'}[e.mode]}）`, pump:e=>`対象を+${e.p}/+${e.t}`,
   reanimate:e=>`墓地のクリーチャーを戦場へ`, regrowth:e=>`墓地のカードを手札へ`, tutor:e=>`ライブラリーからカードを探す`, mill:e=>`${e.n}枚切削`,
-  discardOpp:e=>`各対戦相手は${e.n}枚捨てる`, edictOpp:e=>`各対戦相手は${e.filter}を生け贄`, landFromHand:e=>`手札の土地を戦場へ`, counterspell:e=>`呪文を打ち消す`};
+  discardOpp:e=>`各対戦相手は${e.n}枚捨てる`, edictOpp:e=>`各対戦相手は${e.filter}を生け贄`, landFromHand:e=>`手札の土地を戦場へ`, gainTough:e=>`そのクリーチャーのタフネス分ライフを得る`, populate:e=>`居住（トークンをコピー）`, proliferate:e=>`増殖（自分のカウンターを1個ずつ追加）`, counterspell:e=>`呪文を打ち消す`};
 const fxText = fx => (fx||[]).map(e=>(FX_JA[e.do]||(()=>e.do))(e)).join('／');
 
 /* ================= 継続効果（装備・オーラ・全体強化） ================= */
@@ -844,13 +860,23 @@ function applyPayment(pay){
 }
 
 /* ================= 誘発の管理 ================= */
-function queueTrig(src, ev, ctrlIdx, filterFn){
-  const trs=(src.def.trig||[]).filter(t=>t.ev===ev && (!filterFn||filterFn(t)));
-  for(const t of trs) G.trigQ.push({src, trig:t, ctrl:ctrlIdx??src.ctrl});
+function queueTrig(src, ev, ctrlIdx, filterFn, ctx){
+  const trs=(src.def.trig||[]).filter(t=>t.ev===ev && (!filterFn||filterFn(t,src)));
+  for(const t of trs) G.trigQ.push({src, trig:t, ctrl:ctrlIdx??src.ctrl, ctx});
 }
-function fireFor(p, ev, filterFn, except){
+function fireFor(p, ev, filterFn, except, ctx){
   if(!p || p.lost) return;
-  for(const s of [...p.bf]) if(s!==except) queueTrig(s, ev, p.idx, filterFn);
+  for(const s of [...p.bf]) if(s!==except) queueTrig(s, ev, p.idx, filterFn, ctx);
+}
+function gainLife(p, n){
+  if(n<=0 || !p || p.lost) return;
+  p.life+=n; fireFor(p,'gainlife');
+}
+function fireCreatureEnters(c){
+  for(const q of G.players){
+    if(q.lost) continue;
+    fireFor(q,'cre_etb',(t,s)=>(!t.cond.yours || q.idx===c.ctrl) && (!t.cond.other || s!==c) && (!t.cond.nontoken || !c.token), null, {card:c});
+  }
 }
 function drainTriggers(){
   if(!G || G.draining) return;
@@ -863,7 +889,9 @@ function drainTriggers(){
       if(p.npc){
         if(!q.trig.fx.length) continue;
         log(`【誘発】${p.name}の${nm(q.src)}：${fxText(q.trig.fx)}`);
+        G.ctx=q.ctx||null;
         for(const e of q.trig.fx){ if(e.do!=='counterspell') applyEffect(p, q.src, e); }
+        G.ctx=null;
       } else {
         if(G.pending.length<40) G.pending.push(q);
       }
@@ -942,7 +970,21 @@ function applyEffect(p, src, e, pick){
   const who = p.name;
   switch(e.do){
     case 'draw': drawN(p,e.n); log(`${who}はカードを${e.n}枚引いた`); break;
-    case 'gain': p.life+=e.n; log(`${who}は${e.n}点のライフを得た`); break;
+    case 'gain': gainLife(p,e.n); log(`${who}は${e.n}点のライフを得た`); break;
+    case 'gainTough': { const c=G.ctx?.card; const n=c?Math.max(0,tou(c)):0; if(n){ gainLife(p,n); log(`${who}は${n}点のライフを得た`); } break; }
+    case 'proliferate': {
+      // 自分のパーマネントのカウンターを1個ずつ増やす（相手のものは増やさない）
+      const tg=p.bf.filter(c=>c.p1>0 || (isPW(c.def) && (c.counters.loyalty||0)>0));
+      tg.forEach(c=>{ if(c.p1>0) c.p1++; if(isPW(c.def)) c.counters.loyalty=(c.counters.loyalty||0)+1; });
+      log(`${who}は増殖した${tg.length?`（${tg.map(nm).join('、')}）`:''}`);
+      if(tg.some(c=>c.p1>0)) fireFor(p,'counters');
+      break;
+    }
+    case 'populate': {
+      const tk=p.bf.filter(c=>c.token && isCreature(c.def)).sort((x,y)=>value(y)-value(x))[0];
+      if(tk){ const c=inst(mkDef(tk.def),p.idx,{token:true}); c.zone='bf'; p.bf.push(c); log(`${who}は居住で${nm(tk)}のコピーを生成した`); fireCreatureEnters(c); }
+      break;
+    }
     case 'drain': opps(p).forEach(o=>o.life-=e.n); log(`各対戦相手は${e.n}点のライフを失った`); break;
     case 'ramp': {
       const picks=[].concat(auto?aiRampPicks(p,e):(pick||[])).filter(c=>c && c.zone==='lib');
@@ -975,7 +1017,7 @@ function applyEffect(p, src, e, pick){
     case 'token': {
       for(let i=0;i<e.n;i++){
         const d=mkDef({name:e.name, ja:e.name+'トークン', type:'Token Creature', power:e.p, toughness:e.t, kw:e.kw});
-        const c=inst(d,p.idx,{token:true}); c.zone='bf'; c.tapped=e.tapped; p.bf.push(c);
+        const c=inst(d,p.idx,{token:true}); c.zone='bf'; c.tapped=e.tapped; p.bf.push(c); fireCreatureEnters(c);
       }
       log(`${who}は${e.p}/${e.t}の${e.name}トークンを${e.n}体生成した`); break;
     }
@@ -1106,7 +1148,7 @@ function pendingSheet(){
       const a=e.target.closest('[data-pa]'), d=e.target.closest('[data-pd]');
       if(e.target.closest('[data-pall]')){ G.pending=[]; closeSheet(true); render(); return; }
       if(d){ list.splice(+d.dataset.pd,1); pendingSheet(); render(); return; }
-      if(a){ const q=list.splice(+a.dataset.pa,1)[0]; closeSheet(true); await resolveForHuman(q.src,q.trig.fx); pendingSheet(); }
+      if(a){ const q=list.splice(+a.dataset.pa,1)[0]; closeSheet(true); G.ctx=q.ctx||null; await resolveForHuman(q.src,q.trig.fx); G.ctx=null; pendingSheet(); }
     });
 }
 
@@ -1697,6 +1739,7 @@ function showResult(win){
 }
 
 /* ================= セットアップ画面 ================= */
+const TROSTANI_SAMPLE="統率者\n1 セレズニアの声、トロスターニ\n\nデッキ\n1 過ち無き者、リリアナ\n1 贖われし者、ライズ\n1 魂の管理人\n1 天界の語り部\n1 アヴァシンの巡礼者\n1 ラノワールのエルフ\n1 ベラドンナ・トゥック\n1 光の腹心\n1 復活の声\n1 祝福されし者の声\n1 ロナスの狂信者\n1 エアリス・ゲインズブール\n1 エレンダの秘儀司祭\n1 光に導かれし者、ハリーヤ\n1 輝かしい天使\n1 温室の繁殖者\n1 身代わりの形成師\n1 寛大な夜明け、ラシエル\n1 豊潤の声、シャライ\n1 棘茨の君主\n1 常に友と、ジアン・ヤングー\n1 テューンの大天使\n1 Conclave Evangelist\n1 冠毛の陽馬\n1 花咲く泥獣\n1 大軍のワーム\n1 クウィア・ヴィゴーブルーム\n1 ニクソスの模範\n1 荒々しい三つ子\n1 猛り狂うベイロス\n1 ガルタとマーブレン\n1 昇りたる者、オブ・ニクシリス\n1 動かし得ぬもの、ガルタ\n1 流刑への道\n1 剣を鍬に\n1 盛大なるクレッシェンド\n1 隔離する成長\n1 ヴィゴーブルームの魔除け\n1 過大な贈り物\n1 根生まれの防衛\n1 内にいる獣\n1 取り壊し\n1 ワームの到来\n1 遥か見\n1 破滅の終焉\n1 自然の知識\n1 耕作\n1 木霊の手の内\n1 巫師の天啓\n1 仲間意識\n1 報いの時\n1 クレリック・クラス\n1 フレイアリーズの歌\n1 兵士の育成\n1 天使の合唱\n1 世界魂の歌\n1 太陽の指輪\n1 秘儀の印鑑\n1 忘却の偶像\n1 セレズニアの印鑑\n1 団結のタリスマン\n1 光素の泉\n1 ファイレクシアの処理装置\n1 意志堅固なるアジャニ\n1 群れの力、アジャニ\n1 豪勢な大通り\n1 枝重なる小道\n1 斡旋屋一家の潜伏先\n1 低木林地\n1 梢の眺望\n1 真鍮の都\n1 統率の塔\n1 寓話の小道\n7 森\n1 ガヴォニーの居住区\n1 守護者の木立ち\n1 ラゾテプの採石場\n1 草茂る農地\n7 平地\n1 光輝の泉\n1 ならず者の道\n1 セレズニアの聖域\n1 熾天使の聖域\n1 サングラスの大草原\n1 陽花弁の木立ち\n2 寺院の庭\n";
 const TEVAL_SAMPLE="統率者\n1 釣り合った天秤、テヴァル\n\nデッキ\n1 死儀礼のシャーマン\n1 墓所這い\n1 縫い師への供給者\n1 極楽鳥\n1 喜ぶハーフリング\n1 キシュラの掠め飛び\n1 ダウスィーの虚空歩き\n1 オークの弓使い\n1 組み直しの骸骨\n1 ぬかるみの執政、シディシ\n1 髑髏の予言者\n1 桜族の長老\n1 サテュロスの道探し\n1 シブシグの勇者、コーティス\n1 ニクスの織り手\n1 花をほころばせる者\n1 六番\n1 春花のドルイド\n1 不可思議\n1 ネル・トース族のメーレン\n1 永久の証人\n1 破壊的な逸脱者\n1 川のケルピー\n1 真夜中の空、殉至\n1 絶滅の王\n1 堕ちたる者、オブ・ニクシリス\n1 害悪の機械巨人\n1 黄金牙、タシグル\n1 巨体の墓裂き\n1 頑固な否認\n1 暗黒の儀式\n1 俗世の教示者\n1 忌まわしい回収\n1 過去との取り組み\n1 化膿\n1 砕土\n1 致命的な策略\n1 遥か見\n1 壌土からの生命\n1 不屈の自然\n1 新たな芽吹き\n1 犠牲\n1 耕作\n1 戦慄の復活\n1 生ける屍\n1 スゥルタイの意志\n1 戦争の犠牲\n1 屍術淘汰\n1 宝船の巡航\n1 壌土からの後生\n1 ファイレクシア流再利用\n1 拷問生活\n1 テヴァルの裁き\n1 水蓮の花びら\n1 太陽の指輪\n1 秘儀の印鑑\n1 ディミーアの印鑑\n1 ゴルガリの印鑑\n1 稲妻のすね当て\n1 シミックの印鑑\n1 世界の導管\n1 血染めのぬかるみ\n1 繁殖池\n1 陰謀団の要塞\n1 セファリッドの円形競技場\n1 統率の灯台\n1 統率の塔\n1 アガディームの墓所\n1 溺墓の寺院\n1 風変わりな果樹園\n1 溢れかえる岸辺\n1 不吉地帯\n4 森\n1 内陸の湾港\n4 島\n1 湿地の干潟\n1 愚蒙の記念像\n1 霧深い雨林\n1 草むした墓\n1 汚染された三角州\n1 反射池\n1 沸騰する小湖\n1 窪み渓谷\n4 沼\n1 広漠なる変幻地\n1 新緑の地下墓地\n1 湿った墓\n1 樹木茂る山麓\n1 森林の墓地\n1 ゼイゴスのトライオーム\n";
 let SETUP={status:'', result:null, busy:false, cmdPick:[]};
 const SAMPLE_HINT=`統率者
@@ -1707,6 +1750,14 @@ const SAMPLE_HINT=`統率者
 1 極楽鳥
 4 森
 …`;
+function progHTML(){
+  const st=SETUP.status; if(!st) return '';
+  if(!SETUP.busy) return `<div class="dim" style="margin-top:6px">${esc(st)}</div>`;
+  const m=st.match(/(\d+)\/(\d+)/); const pct=m&&+m[2]?Math.round(+m[1]/+m[2]*100):null;
+  return `<div class="prog"><div class="pl"><span class="spin"></span>${esc(st)}${pct!=null?`（${pct}%）`:''}</div>
+    ${pct!=null?`<div class="pbar"><div style="width:${pct}%"></div></div>`:''}
+    <div class="ps">初回は4デッキ分の取得に30秒〜1分ほどかかります。画面を閉じずにお待ちください。</div></div>`;
+}
 function renderSetup(){
   const r=SETUP.result;
   let res='';
@@ -1736,13 +1787,14 @@ function renderSetup(){
     </div>
     <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">
       <label class="btn sec sm" style="display:inline-block">テキストファイルから読み込む<input type="file" id="deckfile" accept=".txt,text/plain" style="display:none"></label>
-      <button class="btn sec sm" data-s="teval">サンプル（テヴァル）を入れる</button>
+      <button class="btn sec sm" data-s="teval">サンプル：テヴァル</button>
+      <button class="btn sec sm" data-s="trostani">サンプル：トロスターニ</button>
     </div>
-    <div class="dim" style="margin-top:6px">${esc(SETUP.status)}</div>
+    ${progHTML()}
     ${res}
     <h2>自分のカード効果の処理</h2>
-    <div class="seg">${[['assist','補助あり（自動処理を提案）'],['manual','すべて手動']].map(([k,l])=>`<button class="chip ${store.get('mode','assist')===k?'on':''}" data-md="${k}">${l}</button>`).join('')}</div>
-    <div class="dim" style="margin-top:4px">${store.get('mode','assist')==='manual'?'自分のカードの効果・誘発・装備・全体強化はすべて自分で操作します（NPC側は自動のまま）。':'呪文の効果や誘発型能力を、対象を選ぶだけで自動処理できます。'}</div>
+    <div class="seg">${[['assist','補助あり（自動処理を提案）（テスト版）'],['manual','すべて手動']].map(([k,l])=>`<button class="chip ${store.get('mode','assist')===k?'on':''}" data-md="${k}">${l}</button>`).join('')}</div>
+    <div class="dim" style="margin-top:4px">${store.get('mode','assist')==='manual'?'自分のカードの効果・誘発・装備・全体強化はすべて自分で操作します（NPC側は自動のまま）。':'【テスト版】呪文の効果や誘発型能力を、対象を選ぶだけで自動処理できます。カードによっては正しく処理できないことがあります。'}</div>
     <h2>対戦相手</h2>
     ${npcSummary()}
     <p class="dim" style="margin-top:24px;line-height:1.6">カード情報・画像：<a href="https://scryfall.com" style="color:var(--dim)">Scryfall</a> を利用しています。<br>本ツールは非公式のファンツールで、Wizards of the Coast および Scryfall とは関係ありません。マジック：ザ・ギャザリングのカード名・画像の権利は Wizards of the Coast に帰属します。</p>
@@ -1752,7 +1804,7 @@ async function loadDeck(){
   const text=$('#deck').value; store.set('deck',text);
   const parsed=parseDeck(text);
   if(!parsed.main.length && !parsed.commander.length){ SETUP.status='カードが読み取れませんでした。「1 カード名」の形式か確認してください。'; renderSetup(); return; }
-  SETUP.busy=true; SETUP.result=null; SETUP.cmdPick=[]; renderSetup();
+  SETUP.busy=true; SETUP.result=null; SETUP.cmdPick=[]; SETUP.status='カード情報を取得中…'; renderSetup();
   const npcParsed=NPC_LISTS.map(t=>t?parseDeck(t):null);
   const all=[...parsed.commander, ...parsed.main, ...npcParsed.filter(Boolean).flatMap(d=>[...d.commander,...d.main])];
   let map, offline=false, failed=new Set();
@@ -1840,7 +1892,8 @@ function setupClick(e){
   if(!s) return;
   if(s.dataset.s==='load') loadDeck();
   if(s.dataset.s==='cover') coverageSheet(0);
-  if(s.dataset.s==='teval'){ store.set('deck', TEVAL_SAMPLE); renderSetup(); }
+  if(s.dataset.s==='teval'){ store.set('deck', TEVAL_SAMPLE); SETUP.result=null; SETUP.status='テヴァルのデッキを入れました。「デッキを読み込む」を押してください'; renderSetup(); }
+  if(s.dataset.s==='trostani'){ store.set('deck', TROSTANI_SAMPLE); SETUP.result=null; SETUP.status='トロスターニのデッキを入れました。「デッキを読み込む」を押してください'; renderSetup(); }
   if(s.dataset.s==='sample'){ const d=PLACEHOLDER_DECKS[rnd(3)](); newGame({commanders:d.commanders, main:d.main}, currentNpcDecks()); render(); startGame(); }
   if(s.dataset.s==='start'){
     const r=SETUP.result; let cmd=r.commanders, main=r.main;
