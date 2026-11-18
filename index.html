@@ -213,12 +213,13 @@ function splitName(s){
 function parseDeck(text){
   const out={commander:[], main:[], skipped:[]};
   let section='main';
-  for(const raw of text.split(/\r?\n/)){
+  for(const raw of text.split(/\r?\n|\t/)){
     const l=raw.trim(); if(!l) continue;
-    const m = l.match(/^(\d+)\s*[xX×]?\s+(.+)$/);
-    if(!m){
-      if(/統率者|コマンダー|commander/i.test(l)) section='commander';
-      else if(/サイド|sideboard|maybe|検討/i.test(l)) section='side';
+    const m = l.match(/^(\d+)\s*[xX×]?\s*(?=\S)(.+)$/);
+    if(!m || !/^\d+\s*[xX×]?\s*[《【\[「]|^\d+\s*[xX×]?\s+\S/.test(l)){
+      const h=l.replace(/[-ー－─=＝_\s【】\[\]（）()0-9０-９:：枚]/g,'');
+      if(/^(統率者|コマンダー|commanders?)$/i.test(h)) section='commander';
+      else if(/^(サイド(ボード)?|sideboard|maybe(board)?|検討中?)$/i.test(h)) section='side';
       else section='main';
       continue;
     }
@@ -275,7 +276,13 @@ async function searchAll(q){
   }
   return res;
 }
-const nameMatch=(c,ja)=>normJa(c.printed_name)===normJa(ja) || (c.card_faces||[]).some(f=>normJa(f.printed_name)===normJa(ja));
+const nameMatch=(c,ja)=>{
+  const n=normJa(ja); const faces=(c.card_faces||[]).map(f=>normJa(f.printed_name));
+  if(normJa(c.printed_name)===n || faces.includes(n)) return true;
+  if(faces.length && faces.join('//')===n.replace(/\/+/g,'//')) return true;
+  if(n.includes('//') && faces.length && faces[0]===n.split('//')[0]) return true;
+  return false;
+};
 /* entries: [{ja,en}]  →  {map: Map(key -> def), failed: [通信エラーで確認できなかった名前]} */
 async function resolveCards(entries, onProg){
   const cache=store.get('cardcache',{});
@@ -323,7 +330,8 @@ async function resolveCards(entries, onProg){
   ja=need.filter(e=>!out.has(keyOf(e)) && e.ja);
   for(const e of ja){
     const plain=e.ja.normalize('NFKC').replace(/[「」『』"]/g,'');
-    const qs=[`lang:ja !"${e.ja.replace(/"/g,'')}"`, `lang:ja !"${plain}"`, `lang:ja ${plain.replace(/[、,:=・]/g,' ')}`, `lang:any ${plain.replace(/[、,:=・]/g,' ')}`];
+    const first=e.ja.split(/\s*\/\/\s*/)[0];
+    const qs=[...(e.ja.includes('//')?[`lang:ja !"${first}"`]:[]), `lang:ja !"${e.ja.replace(/"/g,'')}"`, `lang:ja !"${plain}"`, `lang:ja ${plain.replace(/[、,:=・]/g,' ')}`, `lang:any ${plain.replace(/[、,:=・]/g,' ')}`];
     let c=null, err=false;
     for(const q of qs){
       try{ const list=await searchAll(q); c=list.find(x=>nameMatch(x,e.ja)) || null; }
@@ -1739,7 +1747,7 @@ function showResult(win){
 }
 
 /* ================= セットアップ画面 ================= */
-const TROSTANI_SAMPLE="統率者\n1 セレズニアの声、トロスターニ\n\nデッキ\n1 過ち無き者、リリアナ\n1 贖われし者、ライズ\n1 魂の管理人\n1 天界の語り部\n1 アヴァシンの巡礼者\n1 ラノワールのエルフ\n1 ベラドンナ・トゥック\n1 光の腹心\n1 復活の声\n1 祝福されし者の声\n1 ロナスの狂信者\n1 エアリス・ゲインズブール\n1 エレンダの秘儀司祭\n1 光に導かれし者、ハリーヤ\n1 輝かしい天使\n1 温室の繁殖者\n1 身代わりの形成師\n1 寛大な夜明け、ラシエル\n1 豊潤の声、シャライ\n1 棘茨の君主\n1 常に友と、ジアン・ヤングー\n1 テューンの大天使\n1 Conclave Evangelist\n1 冠毛の陽馬\n1 花咲く泥獣\n1 大軍のワーム\n1 クウィア・ヴィゴーブルーム\n1 ニクソスの模範\n1 荒々しい三つ子\n1 猛り狂うベイロス\n1 ガルタとマーブレン\n1 昇りたる者、オブ・ニクシリス\n1 動かし得ぬもの、ガルタ\n1 流刑への道\n1 剣を鍬に\n1 盛大なるクレッシェンド\n1 隔離する成長\n1 ヴィゴーブルームの魔除け\n1 過大な贈り物\n1 根生まれの防衛\n1 内にいる獣\n1 取り壊し\n1 ワームの到来\n1 遥か見\n1 破滅の終焉\n1 自然の知識\n1 耕作\n1 木霊の手の内\n1 巫師の天啓\n1 仲間意識\n1 報いの時\n1 クレリック・クラス\n1 フレイアリーズの歌\n1 兵士の育成\n1 天使の合唱\n1 世界魂の歌\n1 太陽の指輪\n1 秘儀の印鑑\n1 忘却の偶像\n1 セレズニアの印鑑\n1 団結のタリスマン\n1 光素の泉\n1 ファイレクシアの処理装置\n1 意志堅固なるアジャニ\n1 群れの力、アジャニ\n1 豪勢な大通り\n1 枝重なる小道\n1 斡旋屋一家の潜伏先\n1 低木林地\n1 梢の眺望\n1 真鍮の都\n1 統率の塔\n1 寓話の小道\n7 森\n1 ガヴォニーの居住区\n1 守護者の木立ち\n1 ラゾテプの採石場\n1 草茂る農地\n7 平地\n1 光輝の泉\n1 ならず者の道\n1 セレズニアの聖域\n1 熾天使の聖域\n1 サングラスの大草原\n1 陽花弁の木立ち\n2 寺院の庭\n";
+const TROSTANI_SAMPLE="Secret Lair Commander Deck: Hatsune Miku」\n※収録されるカードは英語版です[MO] [ARENA]\n1 《豪勢な大通り》\n1 《梢の眺望》\n1 《ガヴォニーの居住区》\n1 《守護者の木立ち》\n1 《ラゾテプの採石場》\n1 《草茂る農地》\n1 《不穏な大草原》\n1 《サングラスの大草原》\n1 《陽花弁の木立ち》\n1 《豊潤の神殿》\n1 《花咲く砂地》\n1 《斡旋屋一家の潜伏先》\n1 《統率の塔》\n1 《灰色革の隠れ家》\n1 《クローサの境界》\n1 《光輝の泉》\n1 《ならず者の道》\n1 《樹液染みの森》\n1 《セレズニアの聖域》\n1 《熾天使の聖域》\n7 《平地》\n7 《森》\n-土地（34）-\n\n1 《セレズニアの声、トロスターニ》\n1 《テューンの大天使》\n1 《豊潤の声、シャライ》\n1 《魂の管理人》\n1 《飢餓の声、ヴォリンクレックス》\n1 《赦免の天使》\n1 《冠毛の陽馬》\n1 《エレンダの秘儀司祭》\n1 《ニクソスの模範》\n1 《輝かしい天使》\n1 《シルバークイルの講師》\n1 《永遠の魂》\n1 《天界の語り部》\n1 《祝福されし者の声》\n1 《終わりなき巣網のアラスタ》\n1 《花咲く泥獣》\n1 《棘茨の君主》\n1 《ロナスの狂信者》\n1 《荒々しい三つ子》\n1 《Conclave Evangelist》\n1 《ガルタとマーブレン》\n1 《寛大な夜明け、ラシエル》\n1 《贖われし者、ライズ》\n1 《復活の声》\n1 《アジャニの群れ仲間》\n1 《縫合の僧侶》\n1 《アヴァシンの巡礼者》\n1 《ラノワールのエルフ》\n1 《裕福な亭主》\n-クリーチャー（29）-\t1 《光素の泉》\n1 《盛大なるクレッシェンド》\n1 《世界魂の歌》\n1 《取り壊し》\n1 《耕作》\n1 《破滅の終焉》\n1 《天使の合唱》\n1 《加護の反射》\n1 《絢爛たる劇場 // 小道具部屋》\n1 《発掘の技》\n1 《報いの時》\n1 《嵐の獣群》\n1 《古のヤギ角》\n1 《治癒の技》\n1 《害獣の侵入》\n1 《巫師の天啓》\n1 《仲間意識》\n1 《兵士の育成》\n1 《ミラーリの目覚め》\n1 《霊気貯蔵器》\n1 《ファイレクシアの処理装置》\n1 《無敵の賛歌》\n1 《クレリック・クラス》\n1 《集い》\n1 《流刑への道》\n1 《根生まれの防衛》\n1 《剣を鍬に》\n1 《探検》\n1 《遥か見》\n1 《自然の知識》\n1 《フレイアリーズの歌》\n1 《隔離する成長》\n1 《忘却の偶像》\n1 《セレズニアの印鑑》\n1 《頭蓋骨絞め》\n1 《太陽の指輪》\n1 《バネ葉の太鼓》\n-呪文（37）-\n";
 const TEVAL_SAMPLE="統率者\n1 釣り合った天秤、テヴァル\n\nデッキ\n1 死儀礼のシャーマン\n1 墓所這い\n1 縫い師への供給者\n1 極楽鳥\n1 喜ぶハーフリング\n1 キシュラの掠め飛び\n1 ダウスィーの虚空歩き\n1 オークの弓使い\n1 組み直しの骸骨\n1 ぬかるみの執政、シディシ\n1 髑髏の予言者\n1 桜族の長老\n1 サテュロスの道探し\n1 シブシグの勇者、コーティス\n1 ニクスの織り手\n1 花をほころばせる者\n1 六番\n1 春花のドルイド\n1 不可思議\n1 ネル・トース族のメーレン\n1 永久の証人\n1 破壊的な逸脱者\n1 川のケルピー\n1 真夜中の空、殉至\n1 絶滅の王\n1 堕ちたる者、オブ・ニクシリス\n1 害悪の機械巨人\n1 黄金牙、タシグル\n1 巨体の墓裂き\n1 頑固な否認\n1 暗黒の儀式\n1 俗世の教示者\n1 忌まわしい回収\n1 過去との取り組み\n1 化膿\n1 砕土\n1 致命的な策略\n1 遥か見\n1 壌土からの生命\n1 不屈の自然\n1 新たな芽吹き\n1 犠牲\n1 耕作\n1 戦慄の復活\n1 生ける屍\n1 スゥルタイの意志\n1 戦争の犠牲\n1 屍術淘汰\n1 宝船の巡航\n1 壌土からの後生\n1 ファイレクシア流再利用\n1 拷問生活\n1 テヴァルの裁き\n1 水蓮の花びら\n1 太陽の指輪\n1 秘儀の印鑑\n1 ディミーアの印鑑\n1 ゴルガリの印鑑\n1 稲妻のすね当て\n1 シミックの印鑑\n1 世界の導管\n1 血染めのぬかるみ\n1 繁殖池\n1 陰謀団の要塞\n1 セファリッドの円形競技場\n1 統率の灯台\n1 統率の塔\n1 アガディームの墓所\n1 溺墓の寺院\n1 風変わりな果樹園\n1 溢れかえる岸辺\n1 不吉地帯\n4 森\n1 内陸の湾港\n4 島\n1 湿地の干潟\n1 愚蒙の記念像\n1 霧深い雨林\n1 草むした墓\n1 汚染された三角州\n1 反射池\n1 沸騰する小湖\n1 窪み渓谷\n4 沼\n1 広漠なる変幻地\n1 新緑の地下墓地\n1 湿った墓\n1 樹木茂る山麓\n1 森林の墓地\n1 ゼイゴスのトライオーム\n";
 let SETUP={status:'', result:null, busy:false, cmdPick:[]};
 const SAMPLE_HINT=`統率者
@@ -1804,6 +1812,7 @@ async function loadDeck(){
   const text=$('#deck').value; store.set('deck',text);
   const parsed=parseDeck(text);
   if(!parsed.main.length && !parsed.commander.length){ SETUP.status='カードが読み取れませんでした。「1 カード名」の形式か確認してください。'; renderSetup(); return; }
+  if(text!==TROSTANI_SAMPLE) SETUP.autoCmd=null;
   SETUP.busy=true; SETUP.result=null; SETUP.cmdPick=[]; SETUP.status='カード情報を取得中…'; renderSetup();
   const npcParsed=NPC_LISTS.map(t=>t?parseDeck(t):null);
   const all=[...parsed.commander, ...parsed.main, ...npcParsed.filter(Boolean).flatMap(d=>[...d.commander,...d.main])];
@@ -1815,6 +1824,7 @@ async function loadDeck(){
   const commanders=parsed.commander.flatMap(e=>Array.from({length:e.n},()=>get(e)));
   const main=parsed.main.flatMap(e=>Array.from({length:e.n},()=>mkDef(get(e))));
   const cands=[...new Map(main.filter(d=>isLegendary(d)||d.unknown).filter(d=>!isLand(d)).map(d=>[d.ja,d])).values()];
+  if(!commanders.length && SETUP.autoCmd){ const i=cands.findIndex(d=>normJa(d.ja)===normJa(SETUP.autoCmd)); SETUP.cmdPick = i>=0?[i]:[]; }
   const myFailed=[...new Set([...parsed.commander,...parsed.main].map(key).filter(k=>failed.has(k)))];
   SETUP.result={commanders, main, missing:[...new Set(missing)], failed:myFailed, anyFailed:failed.size, offline, cands};
   NPC_READY=npcParsed.map((d,i)=>{
@@ -1893,7 +1903,7 @@ function setupClick(e){
   if(s.dataset.s==='load') loadDeck();
   if(s.dataset.s==='cover') coverageSheet(0);
   if(s.dataset.s==='teval'){ store.set('deck', TEVAL_SAMPLE); SETUP.result=null; SETUP.status='テヴァルのデッキを入れました。「デッキを読み込む」を押してください'; renderSetup(); }
-  if(s.dataset.s==='trostani'){ store.set('deck', TROSTANI_SAMPLE); SETUP.result=null; SETUP.status='トロスターニのデッキを入れました。「デッキを読み込む」を押してください'; renderSetup(); }
+  if(s.dataset.s==='trostani'){ store.set('deck', TROSTANI_SAMPLE); SETUP.autoCmd='セレズニアの声、トロスターニ'; SETUP.result=null; SETUP.status='トロスターニのデッキを入れました。「デッキを読み込む」を押してください'; renderSetup(); }
   if(s.dataset.s==='sample'){ const d=PLACEHOLDER_DECKS[rnd(3)](); newGame({commanders:d.commanders, main:d.main}, currentNpcDecks()); render(); startGame(); }
   if(s.dataset.s==='start'){
     const r=SETUP.result; let cmd=r.commanders, main=r.main;
