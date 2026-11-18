@@ -42,7 +42,7 @@ input,select{background:#0e1014;color:var(--tx);border:1px solid var(--line);bor
 .tile.tp .in{transform:rotate(90deg) scale(.72);opacity:.75}
 .tile .n{position:absolute;left:0;right:0;bottom:0;background:rgba(0,0,0,.72);font-size:10px;line-height:1.25;padding:2px 3px;max-height:40px;overflow:hidden}
 .tile .c{position:absolute;right:2px;top:2px;background:rgba(0,0,0,.7);font-size:9px;padding:0 3px;border-radius:3px}
-.tile .pt{position:absolute;right:2px;bottom:42px;background:rgba(0,0,0,.8);font-weight:700;font-size:12px;padding:0 4px;border-radius:3px}
+.tile .pt{position:absolute;right:2px;top:44%;background:rgba(0,0,0,.8);font-weight:700;font-size:12px;padding:0 4px;border-radius:3px}
 .tile .pt.dmg{color:#ff8a80}
 .tile .bd{position:absolute;left:2px;top:2px;font-size:9px;background:var(--gold);color:#000;padding:0 3px;border-radius:3px;font-weight:700}
 .tile .ab{position:absolute;left:0;right:0;top:40%;text-align:center;background:var(--red);font-size:10px;font-weight:700}
@@ -87,8 +87,9 @@ const store = {
 
 /* ================= カード定義 ================= */
 function mkDef(o){
+  if(o && o.img && !o.thumb) o=Object.assign({},o,{thumb:String(o.img).replace('/normal/','/small/')});
   return Object.assign({name:'',ja:'',type:'',jtype:'',cost:'',cmc:0,power:null,toughness:null,loyalty:null,
-    text:'',jtext:'',kw:[],produced:[],ci:[],img:null,art:null,script:null,unknown:false}, o);
+    text:'',jtext:'',kw:[],produced:[],ci:[],img:null,thumb:null,script:null,unknown:false}, o);
 }
 function parseCost(cost){
   const pips=[]; let generic=0;
@@ -122,7 +123,7 @@ function basicByName(n){
 
 /* ================= 仮NPCデッキ（後で指定デッキに差し替え） ================= */
 function syn(ja, type, cost, p, t, kw=[], extra={}){
-  return mkDef(Object.assign({name:ja, ja, type, cost, cmc:cmcOf(cost), power:p, toughness:t, kw, ci:colorsOf(cost)}, extra));
+  return mkDef(Object.assign({syn:true, name:ja, ja, type, cost, cmc:cmcOf(cost), power:p, toughness:t, kw, ci:colorsOf(cost)}, extra));
 }
 const FX = {
   bolt:   (n)=>({effects:[{do:'damage',n,mode:'any target'}], text:`対象に${n}点のダメージを与える。`}),
@@ -192,7 +193,7 @@ const PLACEHOLDER_DECKS = [
 
 /* ================= デッキテキスト解析（晴れる屋形式） ================= */
 function cleanName(s){
-  return s.replace(/[《》「」【】]/g,'').replace(/\s*[\[(（][A-Za-z0-9]{2,6}[\])）](\s*\S+)?\s*$/,'')
+  return s.replace(/^[《【]|[》】]$/g,'').replace(/[《》]/g,'').replace(/\s*[\[(（][A-Za-z0-9]{2,6}[\])）](\s*\S+)?\s*$/,'')
           .replace(/\s*\*F\*\s*$/i,'').trim();
 }
 function splitName(s){
@@ -223,13 +224,26 @@ function parseDeck(text){
 
 /* ================= Scryfall 連携 ================= */
 const SCRY='https://api.scryfall.com';
-async function sfetch(url, opt){
-  const r = await fetch(url, Object.assign({headers:{'Accept':'application/json'}}, opt||{}));
+let lastReq=0;
+async function sfetch(url, opt, tries=0){
+  // Scryfallの上限：検索・collectionは1秒2回まで（500ms間隔）
+  const gap=/\/cards\/(search|collection|named|random)/.test(url)?550:120;
+  const wait=Math.max(0,lastReq+gap-Date.now()); if(wait) await sleep(wait);
+  lastReq=Date.now();
+  let r;
+  try{ r=await fetch(url, Object.assign({headers:{'Accept':'application/json'}}, opt||{})); }
+  catch(e){
+    if(tries<2){ await sleep(1000*(tries+1)); return sfetch(url,opt,tries+1); }
+    const err=new Error('network'); err.offline=true; throw err;
+  }
   if(r.status===404) return null;
+  if(r.status===429 || r.status>=500){
+    if(tries<5){ await sleep(r.status===429?2000*(tries+1):1000*(tries+1)); return sfetch(url,opt,tries+1); }
+  }
   if(!r.ok) throw new Error('HTTP '+r.status);
   return r.json();
 }
-const normJa = s => String(s||'').replace(/[\s　]/g,'').replace(/[・･]/g,'・').replace(/[,，、]/g,'、');
+const normJa = s => String(s||'').normalize('NFKC').replace(/[\s「」『』"']/g,'').replace(/[・･·]/g,'・').replace(/[,，、]/g,'、').replace(/[=＝]/g,'=').replace(/[:：]/g,':');
 function defFromScry(c, jaHint){
   const f=(c.card_faces&&c.card_faces[0])||{};
   const has=k=>c[k]!=null&&c[k]!=='';
@@ -243,69 +257,77 @@ function defFromScry(c, jaHint){
     text:(c.card_faces? c.card_faces.map(x=>x.oracle_text).join('\n— 裏面 —\n') : c.oracle_text)||'',
     jtext:(c.card_faces? c.card_faces.map(x=>x.printed_text||'').filter(Boolean).join('\n— 裏面 —\n') : c.printed_text)||'',
     kw:c.keywords||[], produced:c.produced_mana||[], ci:c.color_identity||[],
-    img:img.normal||null, art:img.art_crop||img.small||null,
+    img:img.normal||null, thumb:img.small||null,
   });
 }
 async function searchAll(q){
   const res=[]; let url=`${SCRY}/cards/search?include_multilingual=true&unique=cards&q=${encodeURIComponent(q)}`;
   for(let page=0; url && page<4; page++){
     const d=await sfetch(url); if(!d) break;
-    res.push(...(d.data||[])); url=d.has_more?d.next_page:null; if(url) await sleep(110);
+    res.push(...(d.data||[])); url=d.has_more?d.next_page:null;
   }
   return res;
 }
-/* entries: [{ja,en}]  →  Map(key -> def)  */
+const nameMatch=(c,ja)=>normJa(c.printed_name)===normJa(ja) || (c.card_faces||[]).some(f=>normJa(f.printed_name)===normJa(ja));
+/* entries: [{ja,en}]  →  {map: Map(key -> def), failed: [通信エラーで確認できなかった名前]} */
 async function resolveCards(entries, onProg){
   const cache=store.get('cardcache',{});
-  const out=new Map(); const need=[];
+  const out=new Map(); const need=[]; const failed=new Set();
   const keyOf=e=>e.ja||e.en;
+  const seen=new Set();
   for(const e of entries){
     const k=keyOf(e);
-    if(out.has(k)) continue;
+    if(seen.has(k)) continue; seen.add(k);
     const b=basicByName(k); if(b){ out.set(k,b); continue; }
     if(cache[k]){ out.set(k, mkDef(cache[k])); continue; }
     need.push(e);
   }
-  let done=0; const total=need.length;
-  const prog=()=>onProg&&onProg(`カード情報を取得中… ${done}/${total}`);
+  const total=need.length;
+  const prog=()=>onProg&&onProg(`カード情報を取得中… ${need.filter(e=>out.has(keyOf(e))).length}/${total}`);
+  const save=()=>{ for(const [k,d] of out){ if(!basicByName(k)) cache[k]=d; } store.set('cardcache', cache); };
   prog();
   // 英語名つき → collection API でまとめて取得
   const en=need.filter(e=>e.en);
   for(let i=0;i<en.length;i+=75){
     const chunk=en.slice(i,i+75);
-    const d=await sfetch(`${SCRY}/cards/collection`,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({identifiers:chunk.map(e=>({name:e.en}))})});
-    (d?.data||[]).forEach(c=>{
-      const e=chunk.find(x=>x.en.toLowerCase()===c.name.toLowerCase()||c.name.toLowerCase().startsWith(x.en.toLowerCase()+' //'));
-      if(e){ out.set(keyOf(e), defFromScry(c, e.ja)); done++; }
-    });
-    prog(); await sleep(110);
+    try{
+      const d=await sfetch(`${SCRY}/cards/collection`,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({identifiers:chunk.map(e=>({name:e.en}))})});
+      (d?.data||[]).forEach(c=>{
+        const e=chunk.find(x=>x.en.toLowerCase()===c.name.toLowerCase()||c.name.toLowerCase().startsWith(x.en.toLowerCase()+' //'));
+        if(e) out.set(keyOf(e), defFromScry(c, e.ja));
+      });
+    }catch(err){ if(err.offline) throw err; }
+    prog();
   }
-  // 日本語名のみ → 日本語版をまとめて検索
+  // 日本語名 → 日本語版をまとめて完全一致検索
   let ja=need.filter(e=>!out.has(keyOf(e)) && e.ja);
-  for(let i=0;i<ja.length;i+=12){
-    const chunk=ja.slice(i,i+12);
+  let okCalls=0;
+  for(let i=0;i<ja.length;i+=8){
+    const chunk=ja.slice(i,i+8);
     const q='lang:ja ('+chunk.map(e=>`!"${e.ja.replace(/"/g,'')}"`).join(' or ')+')';
-    let list=[]; try{ list=await searchAll(q); }catch(err){ if(i===0) throw err; }
-    for(const e of chunk){
-      const c=list.find(c=>normJa(c.printed_name)===normJa(e.ja) || (c.card_faces||[]).some(f=>normJa(f.printed_name)===normJa(e.ja)));
-      if(c){ out.set(keyOf(e), defFromScry(c, e.ja)); done++; }
-    }
-    prog(); await sleep(110);
+    try{
+      const list=await searchAll(q); okCalls++;
+      for(const e of chunk){ const c=list.find(c=>nameMatch(c,e.ja)); if(c) out.set(keyOf(e), defFromScry(c, e.ja)); }
+    }catch(err){ if(err.offline && !okCalls && !out.size) throw err; }
+    prog(); save();
   }
-  // 見つからなかったものは個別にゆるく検索
+  // 残りは1枚ずつ（完全一致 → 記号を除いた検索 → 全言語）
   ja=need.filter(e=>!out.has(keyOf(e)) && e.ja);
   for(const e of ja){
-    let list=[];
-    try{ list=await searchAll(`lang:ja ${e.ja}`); }catch(err){}
-    let c=list.find(c=>normJa(c.printed_name)===normJa(e.ja)) || (list.length===1?list[0]:null);
-    if(!c){ try{ list=await searchAll(`lang:any ${e.ja}`); }catch(err){} c=list.find(c=>normJa(c.printed_name)===normJa(e.ja))||null; }
-    if(c){ out.set(keyOf(e), defFromScry(c, e.ja)); done++; }
-    prog(); await sleep(110);
+    const plain=e.ja.normalize('NFKC').replace(/[「」『』"]/g,'');
+    const qs=[`lang:ja !"${e.ja.replace(/"/g,'')}"`, `lang:ja !"${plain}"`, `lang:ja ${plain.replace(/[、,:=・]/g,' ')}`, `lang:any ${plain.replace(/[、,:=・]/g,' ')}`];
+    let c=null, err=false;
+    for(const q of qs){
+      try{ const list=await searchAll(q); c=list.find(x=>nameMatch(x,e.ja)) || null; }
+      catch(ex){ err=true; break; }
+      if(c) break;
+    }
+    if(c) out.set(keyOf(e), defFromScry(c, e.ja));
+    else if(err) failed.add(keyOf(e));
+    prog(); save();
   }
-  // キャッシュ保存
-  for(const [k,d] of out){ if(!basicByName(k)) cache[k]=d; }
-  store.set('cardcache', cache);
-  return out;
+  save();
+  return {map:out, failed:[...failed]};
 }
 function placeholderDef(e){
   return mkDef({name:e.en||e.ja, ja:e.ja||e.en, unknown:true, type:''});
@@ -317,9 +339,6 @@ const PH={untap:'アンタップ',upkeep:'アップキープ',draw:'ドロー',m
 const SPEEDS={fast:350,normal:900,slow:1700,step:0};
 const OPP_COLORS=['#e8e8e8','#ff8a80','#8fd19e','#f5d76e'];
 const nm = c => c.def.ja || c.def.name;
-const pow = c => num(c.def.power)+c.p1+c.tp;
-const tou = c => num(c.def.toughness)+c.p1+c.tt;
-const hasKw = (c,k) => c.def.kw.some(x=>x.toLowerCase()===k.toLowerCase());
 const alive = () => G.players.filter(p=>!p.lost);
 const opps = p => alive().filter(q=>q!==p);
 
@@ -332,14 +351,15 @@ function log(t){ G.log.push(t); G.ticker=t; }
 function newGame(mine, npcDecks){
   npcDecks = npcDecks || PLACEHOLDER_DECKS.map(f=>f());
   G={players:[], cards:{}, log:[], ticker:'', turn:0, round:1, active:0, first:0, phase:'main1', over:false, paused:false,
-     ui:{attack:null}, settings:Object.assign({speed:'normal', confirmSpells:false, cmdAuto:true}, store.get('settings',{}))};
+     ui:{attack:null}, trigQ:[], pending:[], draining:false, mode:(store.get('mode','assist')==='manual'?'manual':'assist'), settings:Object.assign({speed:'normal', confirmSpells:false, cmdAuto:true, assist:true}, store.get('settings',{}))};
   const decks=[{name:'あなた', deckName:'あなたのデッキ', npc:false, commanders:mine.commanders, main:mine.main}, ...npcDecks.map(d=>Object.assign({},d,{npc:true}))];
   decks.forEach((d,i)=>{
     const p={idx:i, name:d.name, deckName:d.deckName, npc:!!d.npc, life:40, lib:[], hand:[], bf:[], gy:[], ex:[], cz:[],
       cmdDmg:{}, tax:{}, lost:false, landPlayed:false, grudge:{}, mull:0, drewEmpty:false};
     G.players.push(p);
-    d.commanders.forEach(def=>{ const c=inst(def,i,{isCmd:true}); c.zone='cz'; p.cz.push(c); });
-    d.main.forEach(def=>{ const c=inst(def,i); c.zone='lib'; p.lib.push(c); });
+    const prep = def => { prepareDef(def); if(i===0 && G.mode==='manual') Object.assign(def,{fx:[], trig:[], grant:null, anthem:null, pwAbil:[]}); return def; };
+    d.commanders.forEach(def=>{ const c=inst(prep(def),i,{isCmd:true}); c.zone='cz'; p.cz.push(c); });
+    d.main.forEach(def=>{ const c=inst(prep(def),i); c.zone='lib'; p.lib.push(c); });
     shuffle(p.lib);
   });
 }
@@ -347,8 +367,13 @@ function newGame(mine, npcDecks){
 function moveTo(c, zone, opt={}){
   const from=G.players[c.ctrl]; const arr=from[c.zone];
   if(arr){ const i=arr.indexOf(c); if(i>=0) arr.splice(i,1); }
-  if(c.zone==='bf' && zone!=='bf'){
-    Object.assign(c,{tapped:false,dmg:0,p1:0,tp:0,tt:0,dtHit:false,counters:{},attacking:false});
+  const leftBf = c.zone==='bf' && zone!=='bf';
+  const prevCtrl=c.ctrl;
+  if(leftBf){
+    for(const q of G.players) for(const a of [...q.bf]) if(a.attachedTo===c.uid){ if(/\bAura\b/.test(a.def.type)) moveTo(a,'gy'); else a.attachedTo=null; }
+    const wasCre=isCreature(c.def);
+    Object.assign(c,{tapped:false,dmg:0,p1:0,tp:0,tt:0,dtHit:false,counters:{},attacking:false,attachedTo:null,kwT:null});
+    if(zone==='gy' && wasCre){ queueTrig(c,'dies_self',prevCtrl); fireFor(G.players[prevCtrl],'dies_other',null,c); }
     if(c.token){ c.zone='gone'; delete G.cards[c.uid]; return; }
   }
   const owner=G.players[c.owner];
@@ -364,6 +389,8 @@ function moveTo(c, zone, opt={}){
     c.sick=true; c.tapped=!!opt.tapped;
     if(isLand(c.def) && /enters( the battlefield)? tapped\./i.test(c.def.text) && !/unless|if you control|you may pay/i.test(c.def.text)) c.tapped=true;
     if(isPW(c.def)) c.counters.loyalty=num(c.def.loyalty);
+    queueTrig(c,'etb');
+    if(isLand(c.def)) fireFor(G.players[c.ctrl],'landfall');
   }
 }
 function drawN(p,n){
@@ -386,9 +413,10 @@ function manaSources(p){
   for(const c of p.bf){
     if(c.tapped) continue;
     const d=c.def;
-    if(isLand(d)){ const col=landColors(d); if(col.length) s.push({card:c, colors:col}); }
+    const n=Math.max(1,d.manaN||1);
+    if(isLand(d)){ const col=landColors(d); if(col.length) for(let i=0;i<n;i++) s.push({card:c, colors:col}); }
     else if(d.produced && d.produced.length && !(isCreature(d) && c.sick && !hasKw(c,'Haste'))){
-      if(/\{T\}[^.]*Add|\{T\}：/.test(d.text+d.jtext) || d.produced.length) s.push({card:c, colors:d.produced.filter(x=>'WUBRGC'.includes(x))});
+      for(let i=0;i<n;i++) s.push({card:c, colors:d.produced.filter(x=>'WUBRGC'.includes(x))});
     }
   }
   return s;
@@ -435,6 +463,7 @@ function checkSBA(){
     }
   }
   checkGameOver();
+  drainTriggers();
 }
 function lose(p, why){
   p.lost=true; log(`★ ${p.name}は敗北した（${why}）`);
@@ -458,6 +487,7 @@ function applyDamage(src, tg, n, combat){
     const p=G.players[tg.player]; if(p.lost) return;
     p.life-=n;
     if(combat && src.isCmd) p.cmdDmg[src.uid]=(p.cmdDmg[src.uid]||0)+n;
+    if(combat) queueTrig(src,'cdmg');
     log(`${nm(src)} → ${p.name}に${n}点${combat&&src.isCmd?'（統率者ダメージ）':''}`);
   } else {
     const c=tg.card; if(c.zone!=='bf') return;
@@ -493,6 +523,8 @@ async function resolveCombat(ap, plan){
   plan.forEach(({a})=>{ if(!hasKw(a,'Vigilance')) a.tapped=true; a.attacking=true; });
   const byDef={}; plan.forEach(x=>(byDef[x.d]??=[]).push(x));
   for(const d in byDef) log(`${ap.name}の攻撃 → ${G.players[d].name}：${byDef[d].map(x=>`${nm(x.a)}(${pow(x.a)}/${tou(x.a)})`).join('、')}`);
+  plan.forEach(({a})=>queueTrig(a,'attack'));
+  checkSBA();
   await beat();
   const blocks=new Map();
   for(const d of Object.keys(byDef).map(Number)){
@@ -588,65 +620,263 @@ function npcAttackPlan(p){
   }
   return plan;
 }
-/* ================= カードテキスト（英語Oracle）からNPC用の効果を読み取る ================= */
+/* ================= カードテキスト（英語Oracle）の解析 ================= */
 const WORDNUM={a:1,an:1,one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10};
-const toN = w => { if(w==null) return 1; w=String(w).toLowerCase(); return WORDNUM[w] ?? (parseInt(w,10)||0); };
-const KW_LIST=['Flying','First strike','Double strike','Deathtouch','Trample','Lifelink','Vigilance','Haste','Menace','Reach','Defender','Indestructible','Hexproof'];
+const toN = w => { if(w==null) return 1; w=String(w).toLowerCase().replace(/^up to /,''); return WORDNUM[w] ?? (parseInt(w,10)||0); };
+const KW_LIST=['Flying','First strike','Double strike','Deathtouch','Trample','Lifelink','Vigilance','Haste','Menace','Reach','Defender','Indestructible','Hexproof','Shroud'];
+const BASIC_TYPES=['Plains','Island','Swamp','Mountain','Forest'];
+const stripReminder = t => String(t||'').replace(/\([^)]*\)/g,'').replace(/[ \t]+\n/g,'\n').trim();
+const kwIn = s => KW_LIST.filter(k=>new RegExp('\\b'+k+'\\b','i').test(s||''));
+
+/* 「creature」「artifact or enchantment」「nonland permanent」などの記述でパーマネントを絞り込む */
 function targetFilter(desc){
-  const d=desc.toLowerCase();
+  const d=String(desc||'').toLowerCase();
   return c=>{
     const t=c.def.type.toLowerCase();
     if(/nonland permanent/.test(d)) return !/\bland\b/.test(t);
     if(/nonartifact creature/.test(d)) return /creature/.test(t)&&!/artifact/.test(t);
-    if(/nonblack creature/.test(d)) return /creature/.test(t)&&!(c.def.ci||[]).includes('B');
+    if(/noncreature/.test(d) && /permanent/.test(d)) return !/creature/.test(t) && !/\bland\b/.test(t);
     if(/\bpermanent\b/.test(d) && !/creature|artifact|enchantment|land|planeswalker/.test(d)) return true;
     const kinds=['creature','artifact','enchantment','planeswalker','land','battle'].filter(k=>d.includes(k));
     if(!kinds.length) return false;
     return kinds.some(k=>t.includes(k));
   };
 }
-function parseEffects(text){
-  if(!text) return [];
-  let s=text.replace(/\([^)]*\)/g,'');               // 注釈文を除去
-  if(/choose one —/i.test(s)){ const m=s.split(/\n•\s*/); if(m.length>1) s=m[1]; } // 「1つを選ぶ」は最初のモード
-  const fx=[]; let m;
-  if(/(destroy|exile) all (creatures|nonland permanents)/i.test(s)){ fx.push({do:'wrath', how:/exile all/i.test(s)?'ex':'gy', what:/nonland/i.test(s)?'nonland':'creature'}); return fx; }
-  if((m=s.match(/destroy (?:up to one )?target ([^.,;]+?)(?:\.|,|;| and | with| an opponent| you don't)/i))) fx.push({do:'destroy', filter:m[1]});
-  if((m=s.match(/exile (?:up to one )?target ([^.,;]+?)(?:\.|,|;| and | with| an opponent| you don't| until)/i)) && !/card/.test(m[1])) fx.push({do:'exile', filter:m[1]});
-  if((m=s.match(/return (?:up to one )?target ([^.]+?) to (?:its|their) owner'?s'? hands?/i)) && !/card|you control/.test(m[1])) fx.push({do:'bounce', filter:m[1]});
-  if((m=s.match(/deals? (\d+|x) damage to (any target|target creature or planeswalker|target creature|each opponent|target player or planeswalker|target opponent|target player)/i)) && m[1].toLowerCase()!=='x') fx.push({do:'damage', n:+m[1], mode:m[2].toLowerCase()});
-  if((m=s.match(/search your library for (a|an|up to (?:one|two|three)) basic (?:land|forest|island|swamp|mountain|plains)[^.]*?cards?/i)) && /onto the battlefield/i.test(s)){
-    const n=toN(m[1].replace(/up to /i,''));
-    fx.push({do:'ramp', n, toHand:/other into your hand/i.test(s)?1:0, tapped:/battlefield tapped/i.test(s)});
-  }
-  if((m=s.match(/create (a|an|one|two|three|four|five|\d+) (tapped )?(\d+)\/(\d+) ([^.]*?)creature tokens?(?: with ([^.]+?))?(?:\.|,| and | that| for)/i))){
-    const kw=KW_LIST.filter(k=>(m[6]||'').toLowerCase().includes(k.toLowerCase()));
-    fx.push({do:'token', n:toN(m[1]), p:m[3], t:m[4], name:m[5].trim().replace(/\b(white|blue|black|red|green|colorless)\b ?(and )?/gi,'').trim()||'Token', kw, tapped:!!m[2]});
-  }
-  if((m=s.match(/put (a|an|one|two|\d+) \+1\/\+1 counters? on target creature you don't control/i))) fx.push({do:'counter', n:toN(m[1]), mode:'opp'});
-  else if((m=s.match(/put (a|an|one|two|three|four|\d+) \+1\/\+1 counters? on (each creature you control|each other creature you control|target creature(?: you control)?|up to (?:one|two) target creatures?|it|this creature|~)/i)))
-    fx.push({do:'counter', n:toN(m[1]), mode:/each/i.test(m[2])?'each':/target/i.test(m[2])?'target':'self'});
-  if((m=s.match(/(?:^|[.\n] ?|, then |and )draws? (a|one|two|three|four|five|\d+) cards?/i)) && !/target player draws|each player draws|each opponent draws/i.test(s)) fx.push({do:'draw', n:toN(m[1])});
-  if((m=s.match(/you gain (\d+) life/i))) fx.push({do:'gain', n:+m[1]});
-  if((m=s.match(/each opponent loses (\d+) life/i))) fx.push({do:'drain', n:+m[1]});
-  return fx;
+/* 「a creature」「an instant or sorcery」「a Dragon creature」などでカード（手札・ライブラリー・墓地）を絞り込む */
+function cardFilter(desc){
+  const raw=String(desc||'').replace(/^(a|an|up to (one|two|three))\s+/i,'').trim();
+  const d=raw.toLowerCase();
+  const kinds=['creature','artifact','enchantment','planeswalker','land','instant','sorcery','legendary','battle'].filter(k=>d.includes(k));
+  const nonland=/nonland/.test(d), noncre=/noncreature/.test(d), basic=/basic/.test(d);
+  const subs=(raw.match(/\b[A-Z][a-z]+\b/g)||[]).filter(w=>!['Aura','Equipment'].includes(w)||true);
+  return c=>{
+    const t=c.def.type;
+    if(nonland && /\bLand\b/.test(t)) return false;
+    if(noncre && /\bCreature\b/.test(t)) return false;
+    if(basic && !/\bBasic\b/.test(t)) return false;
+    if(subs.length && !subs.some(s=>t.includes(s))) return false;
+    if(kinds.length && !kinds.filter(k=>k!=='legendary').some(k=>t.toLowerCase().includes(k)) && kinds.some(k=>k!=='legendary')) return false;
+    if(kinds.includes('legendary') && !/Legendary/.test(t)) return false;
+    return true;
+  };
 }
-function etbText(def){
-  const lines=(def.text||'').split('\n');
-  return lines.filter(l=>/^when(ever)? (this creature|this artifact|this enchantment|this permanent|~|[^,]*?) enters/i.test(l) && !/^whenever (another|a|one or more)/i.test(l))
-              .map(l=>l.replace(/^[^,]*enters[^,]*,\s*/i,'')).join('\n');
-}
-function prepareNpcDef(def){
-  if(def.script || def.unknown) return def;
-  const fx = isInstSorc(def) ? parseEffects(def.text) : parseEffects(etbText(def));
-  if(fx.length) def.script={effects:fx, etb:!isInstSorc(def)};
-  return def;
+function spellMatches(filter, def){
+  const f=String(filter||'').toLowerCase().trim();
+  if(!f) return true;
+  if(/noncreature/.test(f)) return !isCreature(def);
+  if(/instant or sorcery/.test(f)) return isInstSorc(def);
+  if(/creature/.test(f)) return isCreature(def);
+  if(/artifact/.test(f)) return /Artifact/.test(def.type);
+  if(/enchantment/.test(f)) return /Enchantment/.test(def.type);
+  if(/legendary/.test(f)) return isLegendary(def);
+  if(/dragon/.test(f)) return /Dragon/.test(def.type);
+  return true;
 }
 
-function oppPermanents(p, filter, noTargetProt){
-  return opps(p).flatMap(o=>o.bf.filter(c=>filter(c) && !(noTargetProt||hasKw(c,'Hexproof')||hasKw(c,'Shroud')) ));
+function parseEffects(text){
+  if(!text) return [];
+  let s=stripReminder(text);
+  if(/choose one —/i.test(s)){ const m=s.split(/\n•\s*/); if(m.length>1) s=m[1]; }
+  const fx=[]; let m;
+  const all=s.match(/(destroy|exile) all (creatures|nonland permanents)/i) || s.match(/(destroy|exile) all (artifacts and enchantments|artifacts|enchantments|planeswalkers)/i);
+  if(all){ fx.push({do:'wrath', how:/exile/i.test(all[1])?'ex':'gy', what:all[2].toLowerCase()}); return fx; }
+  if((m=s.match(/deals (\d+) damage to each creature/i)) && !/each creature you don't control/i.test(s)){ fx.push({do:'sweep', n:+m[1]}); return fx; }
+  if((m=s.match(/counter target ([^.,]*?)spell/i))) fx.push({do:'counterspell', filter:m[1].trim()});
+  if((m=s.match(/destroy (?:up to one )?target ([^.,;]+?)(?:\.|,|;| and | with| an opponent| you don't| that)/i))) fx.push({do:'destroy', filter:m[1]});
+  if((m=s.match(/exile (?:up to one )?target ([^.,;]+?)(?:\.|,|;| and | with| an opponent| you don't| until| that)/i)) && !/card/.test(m[1])) fx.push({do:'exile', filter:m[1]});
+  if((m=s.match(/return (?:up to one )?target ([^.]+?) to (?:its|their) owner'?s'? hands?/i)) && !/card|you control/.test(m[1])) fx.push({do:'bounce', filter:m[1]});
+  if((m=s.match(/deals? (\d+) damage to (any target|target creature or planeswalker|target creature|each opponent|target player or planeswalker|target opponent|target player)/i))) fx.push({do:'damage', n:+m[1], mode:m[2].toLowerCase()});
+  // リアニメイト
+  if((m=s.match(/return (?:up to one )?target ([^.]*?)creature card from (your|a) graveyard to the battlefield/i))) fx.push({do:'reanimate', any:m[2].toLowerCase()==='a', loseCmc:/lose life equal to its mana value/i.test(s)});
+  else if(/put target creature card from a graveyard onto the battlefield under your control/i.test(s) || /return enchanted creature card to the battlefield/i.test(s)) fx.push({do:'reanimate', any:true, loseCmc:/lose life equal to its mana value/i.test(s)});
+  // 墓地から手札へ
+  if((m=s.match(/return (up to (?:one|two|three) )?target ([^.]*?)cards? from your graveyard to your hand/i))) fx.push({do:'regrowth', n:m[1]?toN(m[1].trim()):1, filter:m[2]});
+  // 土地サーチ（戦場へ）
+  if((m=s.match(/search your library for (a|an|up to (?:one|two|three)|two|three) ([^.]*?)cards?[^.]*?\./i)) && /onto the battlefield/i.test(m[0]+s.slice(s.indexOf(m[0])+m[0].length, s.indexOf(m[0])+m[0].length+120)) && /land|forest|island|swamp|mountain|plains/i.test(m[2]) && !/creature|artifact|enchantment/i.test(m[2])){
+    fx.push({do:'ramp', n:toN(m[1]), toHand:/other into your hand/i.test(s)?1:0, tapped:/battlefield tapped/i.test(s), basic:/basic/i.test(m[2]), subs:BASIC_TYPES.filter(x=>new RegExp(x,'i').test(m[2]))});
+  }
+  // サーチ（手札・ライブラリーの上へ）
+  else if((m=s.match(/search your library for (an? |up to one )?([^.,]*?)cards?(?: with [^,.]*)?[,.][^.]*?(put (?:it|that card|them) into your hand|put (?:it|that card) on top|on top of your library)/i))) fx.push({do:'tutor', filter:m[2], top:/on top/i.test(m[3])});
+  if(/put a land card from your hand onto the battlefield/i.test(s)) fx.push({do:'landFromHand'});
+  if((m=s.match(/create (a|an|one|two|three|four|five|\d+) (tapped )?(\d+)\/(\d+) ([^.]*?)creature tokens?(?: with ([^.]+?))?(?:\.|,| and | that| for| attacking)/i))){
+    fx.push({do:'token', n:toN(m[1]), p:m[3], t:m[4], name:m[5].trim().replace(/\b(white|blue|black|red|green|colorless|artifact|legendary|snow)\b ?(and )?/gi,'').trim()||'Token', kw:kwIn(m[6]), tapped:!!m[2]});
+  }
+  if((m=s.match(/create (a|an|one|two|three|four|\d+) (?:tapped )?treasure tokens?/i))) fx.push({do:'treasure', n:toN(m[1])});
+  if((m=s.match(/put (a|an|one|two|\d+) \+1\/\+1 counters? on target creature you don't control/i))) fx.push({do:'counter', n:toN(m[1]), mode:'opp'});
+  else if((m=s.match(/put (a|an|one|two|three|four|x|\d+) \+1\/\+1 counters? on (each creature you control|each other creature you control|target creature(?: you control)?|up to (?:one|two) target creatures?|it|this creature|~)/i)) && m[1].toLowerCase()!=='x')
+    fx.push({do:'counter', n:toN(m[1]), mode:/each/i.test(m[2])?'each':/target/i.test(m[2])?'target':'self'});
+  if((m=s.match(/target creature (?:you control )?gets \+(\d+)\/\+(\d+)(?: and gains ([^.]+?))? until end of turn/i))) fx.push({do:'pump', p:+m[1], t:+m[2], kw:kwIn(m[3])});
+  if((m=s.match(/(?:^|[.\n] ?|, then |and |you )draws? (a|one|two|three|four|five|\d+) cards?/i)) && !/target player draws|each player draws|each opponent draws/i.test(s)) fx.push({do:'draw', n:toN(m[1])});
+  if((m=s.match(/you gain (\d+) life/i))) fx.push({do:'gain', n:+m[1]});
+  if((m=s.match(/each opponent loses (\d+) life/i))) fx.push({do:'drain', n:+m[1]});
+  if((m=s.match(/(?:^|[.\n] ?|, then |and |you )mill (a|one|two|three|four|five|six|\d+) cards?/i))) fx.push({do:'mill', n:toN(m[1])});
+  if((m=s.match(/each opponent discards (a|an|one|two|\d+) cards?/i))) fx.push({do:'discardOpp', n:toN(m[1])});
+  if((m=s.match(/each opponent sacrifices (a|an) (creature|nonland permanent|permanent|artifact|enchantment)/i))) fx.push({do:'edictOpp', filter:m[2]});
+  return fx;
+}
+
+/* 誘発型能力 */
+function parseTriggers(def){
+  const out=[];
+  for(const raw of stripReminder(def.text).split('\n')){
+    const l=raw.trim(); if(!/^(when|whenever|at the beginning)/i.test(l)) continue;
+    let ev=null, cond={}, m;
+    const head=l.split(',')[0];
+    if(/\benters\b/i.test(head) && !/^whenever (another|a |an |one or more|a land)/i.test(head) && /^(when|whenever)/i.test(head)) ev='etb';
+    else if(/^whenever a land( you control)? enters/i.test(head)) ev='landfall';
+    else if(/^whenever [^,]*\battacks\b/i.test(head) && !/^whenever (a|another|one or more) (creature|creatures)/i.test(head)) ev='attack';
+    else if(/^at the beginning of your upkeep/i.test(head)) ev='upkeep';
+    else if(/^at the beginning of (your|each) end step/i.test(head)) ev='end';
+    else if(/^at the beginning of combat on your turn/i.test(head)) ev='bcombat';
+    else if((m=head.match(/^whenever you cast (?:a|an|your first)? ?(.*?)spell/i))){ ev='cast'; cond.filter=m[1].trim(); }
+    else if(/deals combat damage to a player/i.test(head) && !/^whenever (a|one or more) creatures? you control/i.test(head)) ev='cdmg';
+    else if(/^whenever (another )?(nontoken )?creature you control dies/i.test(head)) ev='dies_other';
+    else if(/^when(ever)? [^,]*\bdies\b/i.test(head)) ev='dies_self';
+    else if(/^whenever one or more \+1\/\+1 counters are put on/i.test(head)) ev='counters';
+    if(!ev) continue;
+    if(/\benters or dies\b/i.test(head)) out.push({ev:'dies_self', cond, fx:parseEffects(l.replace(/^[^,]*,\s*/,'')), text:l});
+    out.push({ev, cond, fx:parseEffects(l.replace(/^[^,]*,\s*/,'')), text:l});
+  }
+  return out;
+}
+function parseGrant(text, who){
+  const s=stripReminder(text);
+  const m=s.match(new RegExp(who+' creature gets ([+-]\\d+)/([+-]\\d+)','i'));
+  const m2=s.match(new RegExp(who+' creature (?:gets [^.]*? and )?(?:has|gains) ([^.]+)','i'));
+  const kw=m2?kwIn(m2[1]):[];
+  if(!m && !kw.length) return null;
+  return {p:m?+m[1]:0, t:m?+m[2]:0, kw};
+}
+function parseAnthem(text){
+  const s=stripReminder(text); let m;
+  if((m=s.match(/^(other )?creatures you control get \+(\d+)\/\+(\d+)(?: and have ([^.]+))?/im))) return {p:+m[2], t:+m[3], kw:kwIn(m[4]), other:!!m[1]};
+  if((m=s.match(/^(other )?creatures you control have ([^.]+)/im)) && kwIn(m[2]).length) return {p:0,t:0,kw:kwIn(m[2]), other:!!m[1]};
+  return null;
+}
+function parsePW(def){
+  const out=[]; const jl=String(def.jtext||'').split('\n').filter(l=>/^[[［]?[+＋−\-–ー]?[0-9０-９XＸ]+[\]］]?\s*[：:]/.test(l.trim()));
+  stripReminder(def.text).split('\n').forEach(l=>{
+    const m=l.trim().match(/^([+−\-–]?)(\d+|X):\s*(.+)$/); if(!m) return;
+    const n=m[2]==='X'?0:+m[2]; const cost=m[1]==='+'?n:(m[1]?-n:0);
+    out.push({cost, text:m[3], jtext:jl[out.length]||'', fx:parseEffects(m[3])});
+  });
+  return out;
+}
+function manaInfo(def){
+  const t=stripReminder(def.text); let n=1, oneShot=false; let m;
+  if((m=t.match(/\{T\}[^:\n]*:\s*Add ((?:\{[WUBRGC]\})+)/))) n=(m[1].match(/\{/g)||[]).length;
+  if(/Add two mana/i.test(t)) n=2; if(/Add three mana/i.test(t)) n=3;
+  if(/\{T\}, Sacrifice (this|~)[^:\n]*: Add/i.test(t) || /Sacrifice (this|~)[^:\n]*: Add/i.test(t)) oneShot=true;
+  return {n, oneShot};
+}
+/* カード定義に解析結果を付ける（あなた・NPC共通） */
+function prepareDef(def){
+  if(def.unknown) return def;
+  if(def.syn){ def.fx=def.script?.effects||[]; def.trig=[]; if(def.script?.priority) def.fxPriority=def.script.priority; return def; }
+  def.fx = isInstSorc(def) ? parseEffects(def.text) : [];
+  def.trig = isInstSorc(def) ? [] : parseTriggers(def);
+  def.grant = /\bEquipment\b/.test(def.type) ? parseGrant(def.text,'equipped') : (/\bAura\b/.test(def.type) ? parseGrant(def.text,'enchanted') : null);
+  if(/\bAura\b/.test(def.type)){ const f=parseEffects(def.text).filter(e=>e.do==='reanimate'); if(f.length) def.fx=f; }
+  def.anthem = parseAnthem(def.text);
+  def.pwAbil = isPW(def) ? parsePW(def) : [];
+  const eq=stripReminder(def.text).match(/\bEquip(?: [a-z ]+)? ((?:\{[^}]+\})+)/i); def.equipCost=eq?eq[1]:null;
+  const mi=manaInfo(def); def.manaN=mi.n; def.oneShot=def.oneShot||mi.oneShot;
+  def.fxPriority = def.fx.some(e=>e.do==='ramp') ? 40 : 0;
+  return def;
+}
+const prepareNpcDef = prepareDef;
+
+/* 対応状況（効果一覧画面用） */
+function analyzeDef(def){
+  if(def.unknown) return {st:'none', lines:[]};
+  if(isLand(def)) return {st:'land', lines:[]};
+  const lines=stripReminder(def.text).split('\n').map(l=>l.trim()).filter(Boolean);
+  if(!lines.length) return {st:'auto', lines:[]};
+  const res=lines.map(l=>{
+    let ok=false;
+    if(isInstSorc(def)) ok=(def.fx||[]).length>0;
+    else if(/^\{T\}[^:]*:\s*Add/i.test(l) || /^\{T\}, Sacrifice[^:]*: Add/i.test(l)) ok=(def.produced||[]).length>0;
+    else if(l.split(/,\s*/).every(t=>KW_LIST.some(k=>t.toLowerCase().startsWith(k.toLowerCase())))) ok=true;
+    else if(/^Equip/i.test(l)) ok=!!def.equipCost;
+    else if(/^(Equipped|Enchanted) creature/i.test(l)) ok=!!def.grant;
+    else if(/^Enchant /i.test(l)) ok=true;
+    else if(/^(other )?creatures you control (get|have)/i.test(l)) ok=!!def.anthem;
+    else if(/^(when|whenever|at the beginning)/i.test(l)) ok=(def.trig||[]).some(t=>t.text===l && t.fx.length);
+    else if(/^[+−\-–]?(\d+|X):/.test(l)) ok=(def.pwAbil||[]).some(a=>l.includes(a.text) && a.fx.length);
+    return {l, ok};
+  });
+  const h=res.filter(r=>r.ok).length;
+  return {st: h===res.length?'auto':(h?'partial':'none'), lines:res};
+}
+const FX_JA={draw:e=>`カードを${e.n}枚引く`, gain:e=>`${e.n}点のライフを得る`, drain:e=>`各対戦相手は${e.n}点失う`,
+  ramp:e=>`土地を${e.n}枚探して戦場へ${e.toHand?'（1枚は手札へ）':''}`, destroy:e=>`対象を破壊（${e.filter}）`, exile:e=>`対象を追放（${e.filter}）`,
+  bounce:e=>`対象を手札に戻す（${e.filter}）`, wrath:e=>`${e.what}をすべて${e.how==='ex'?'追放':'破壊'}`, sweep:e=>`各クリーチャーに${e.n}点`,
+  damage:e=>`${e.n}点のダメージ（${e.mode}）`, token:e=>`${e.p}/${e.t}のトークンを${e.n}体`, treasure:e=>`宝物を${e.n}個`,
+  counter:e=>`+1/+1カウンターを${e.n}個（${{each:'自軍全体',self:'自身',target:'対象',opp:'相手のクリーチャー'}[e.mode]}）`, pump:e=>`対象を+${e.p}/+${e.t}`,
+  reanimate:e=>`墓地のクリーチャーを戦場へ`, regrowth:e=>`墓地のカードを手札へ`, tutor:e=>`ライブラリーからカードを探す`, mill:e=>`${e.n}枚切削`,
+  discardOpp:e=>`各対戦相手は${e.n}枚捨てる`, edictOpp:e=>`各対戦相手は${e.filter}を生け贄`, landFromHand:e=>`手札の土地を戦場へ`, counterspell:e=>`呪文を打ち消す`};
+const fxText = fx => (fx||[]).map(e=>(FX_JA[e.do]||(()=>e.do))(e)).join('／');
+
+/* ================= 継続効果（装備・オーラ・全体強化） ================= */
+function attachmentsOf(c){
+  if(!G || c.zone!=='bf') return [];
+  const out=[]; for(const p of G.players) for(const a of p.bf) if(a.attachedTo===c.uid) out.push(a);
+  return out;
+}
+function bonus(c){
+  let p=0,t=0; const kw=[];
+  if(!G || c.zone!=='bf') return {p,t,kw};
+  for(const a of attachmentsOf(c)){ const g=a.def.grant; if(g){ p+=g.p; t+=g.t; kw.push(...g.kw); } }
+  if(isCreature(c.def)) for(const s of G.players[c.ctrl].bf){ const g=s.def.anthem; if(g && !(g.other && s===c)){ p+=g.p; t+=g.t; kw.push(...g.kw); } }
+  return {p,t,kw};
+}
+function pow(c){ return num(c.def.power)+c.p1+c.tp+bonus(c).p; }
+function tou(c){ return num(c.def.toughness)+c.p1+c.tt+bonus(c).t; }
+function hasKw(c,k){
+  const kl=k.toLowerCase();
+  if(c.def.kw.some(x=>x.toLowerCase()===kl)) return true;
+  if(c.kwT && c.kwT.includes(kl)) return true;
+  return bonus(c).kw.some(x=>x.toLowerCase()===kl);
+}
+function applyPayment(pay){
+  const seen=new Set();
+  for(const s of pay){ if(seen.has(s.card)) continue; seen.add(s.card); s.card.tapped=true; if(s.card.def.oneShot && s.card.zone==='bf') moveTo(s.card,'gy'); }
+}
+
+/* ================= 誘発の管理 ================= */
+function queueTrig(src, ev, ctrlIdx, filterFn){
+  const trs=(src.def.trig||[]).filter(t=>t.ev===ev && (!filterFn||filterFn(t)));
+  for(const t of trs) G.trigQ.push({src, trig:t, ctrl:ctrlIdx??src.ctrl});
+}
+function fireFor(p, ev, filterFn, except){
+  if(!p || p.lost) return;
+  for(const s of [...p.bf]) if(s!==except) queueTrig(s, ev, p.idx, filterFn);
+}
+function drainTriggers(){
+  if(!G || G.draining) return;
+  G.draining=true;
+  let guard=0;
+  try{
+    while(G.trigQ.length && guard++<60 && !G.over){
+      const q=G.trigQ.shift(); const p=G.players[q.ctrl];
+      if(!p || p.lost) continue;
+      if(p.npc){
+        if(!q.trig.fx.length) continue;
+        log(`【誘発】${p.name}の${nm(q.src)}：${fxText(q.trig.fx)}`);
+        for(const e of q.trig.fx){ if(e.do!=='counterspell') applyEffect(p, q.src, e); }
+      } else {
+        if(G.pending.length<40) G.pending.push(q);
+      }
+    }
+  } finally { G.draining=false; }
+}
+
+/* ================= 効果の適用 ================= */
+function oppPermanents(p, filter, ignoreProt){
+  return opps(p).flatMap(o=>o.bf.filter(c=>filter(c) && (ignoreProt || !(hasKw(c,'Hexproof')||hasKw(c,'Shroud')))));
 }
 function permValue(c){ return isCreature(c.def)?value(c):(isLand(c.def)?1:2+c.def.cmc); }
+function cardValue(c){ return isCreature(c.def)?num(c.def.power)+num(c.def.toughness)+c.def.cmc:c.def.cmc+(isLand(c.def)?0.5:0); }
 function bestTargetFor(p, e){
   if(e.do==='destroy'||e.do==='exile'||e.do==='bounce'){
     let list=oppPermanents(p, targetFilter(e.filter));
@@ -655,71 +885,279 @@ function bestTargetFor(p, e){
   }
   return null;
 }
-function boardValue(p, what){ return p.bf.filter(c=>what==='nonland'?!isLand(c.def):isCreature(c.def)).reduce((s,c)=>s+permValue(c),0); }
-function npcEffectUseful(p, def){
-  const fx=def.script; if(!fx) return false;
-  for(const e of fx.effects){
-    if(['destroy','exile','bounce'].includes(e.do)){ const t=bestTargetFor(p,e); if(!t || permValue(t)<(e.do==='bounce'?5:4)) return false; }
-    if(e.do==='ramp' && !p.lib.some(c=>isBasicLand(c.def))) return false;
-    if(e.do==='wrath'){ const mine=boardValue(p,e.what); const theirs=Math.max(...opps(p).map(o=>boardValue(o,e.what))); if(theirs < mine+10) return false; }
-    if(e.do==='counter' && e.mode!=='self' && !p.bf.some(c=>isCreature(c.def))) return false;
-  }
-  return true;
+function boardValue(p, what){
+  const f = what==='nonland permanents'||what==='nonland' ? (c=>!isLand(c.def)) : what==='creatures'||what==='creature' ? (c=>isCreature(c.def)) : (c=>new RegExp(what.replace(/s\b/g,'').split(' and ').join('|'),'i').test(c.def.type));
+  return p.bf.filter(f).reduce((s,c)=>s+permValue(c),0);
 }
-async function runEffects(p, card){
-  const src=card;
-  for(const e of card.def.script.effects){
-    if(G.over) return;
-    if(e.do==='draw'){ drawN(p,e.n); log(`${p.name}はカードを${e.n}枚引いた`); }
-    else if(e.do==='gain'){ p.life+=e.n; log(`${p.name}は${e.n}点のライフを得た`); }
-    else if(e.do==='drain'){ opps(p).forEach(o=>o.life-=e.n); log(`各対戦相手は${e.n}点のライフを失った`); }
-    else if(e.do==='ramp'){
-      for(let i=0;i<e.n;i++){
-        const land=p.lib.find(c=>isBasicLand(c.def)); if(!land) break;
-        if(i>=e.n-e.toHand && e.toHand){ moveTo(land,'hand'); log(`${p.name}は${nm(land)}を手札に加えた`); }
-        else { moveTo(land,'bf',{tapped:e.tapped}); log(`${p.name}は${nm(land)}を戦場に出した`); }
-      }
-      shuffle(p.lib);
+function rampCands(p,e){ return p.lib.filter(c=>isLand(c.def) && (e.basic? isBasicLand(c.def):true) && (e.subs?.length ? e.subs.some(x=>c.def.type.includes(x)) : true)); }
+function aiRampPicks(p,e){
+  const need=new Set([...p.hand,...p.cz].flatMap(c=>colorsOf(c.def.cost)));
+  const have=new Set(p.bf.flatMap(c=>isLand(c.def)?landColors(c.def):[]));
+  const sc=c=>landColors(c.def).filter(x=>need.has(x)&&!have.has(x)).length*2+landColors(c.def).filter(x=>need.has(x)).length;
+  const cands=rampCands(p,e).sort((x,y)=>sc(y)-sc(x));
+  const out=[]; const used=new Set();
+  for(const c of cands){ if(out.length>=e.n) break; if(used.has(c.def.name) && cands.some(x=>!used.has(x.def.name)&&!out.includes(x))) continue; out.push(c); used.add(c.def.name); }
+  return out;
+}
+function aiDamageTarget(p,e){
+  const os=opps(p);
+  const face=(e.mode!=='target creature' && e.mode!=='target creature or planeswalker')?os.find(o=>o.life<=e.n):null;
+  if(face) return {player:face.idx};
+  if(/creature|any/.test(e.mode)){
+    const ct=oppPermanents(p,c=>isCreature(c.def)).filter(c=>tou(c)-c.dmg<=e.n && value(c)>=4).sort((x,y)=>value(y)-value(x))[0];
+    if(ct) return ct;
+  }
+  if(/player|opponent|any/.test(e.mode)){ const t=[...os].sort((x,y)=>threatOf(y)-threatOf(x))[0]; if(t) return {player:t.idx}; }
+  return null;
+}
+function gyCreatures(p,e){ return (e.any?G.players.filter(q=>!q.lost).flatMap(q=>q.gy):p.gy).filter(c=>isCreature(c.def)); }
+function npcFxUseful(p, fx, src){
+  if(!fx || !fx.length) return false;
+  let useful=false;
+  for(const e of fx){
+    switch(e.do){
+      case 'destroy': case 'exile': case 'bounce': { const t=bestTargetFor(p,e); if(!t || permValue(t)<(e.do==='bounce'?5:4)) return false; useful=true; break; }
+      case 'damage': if(!aiDamageTarget(p,e) && e.mode!=='each opponent') return false; useful=true; break;
+      case 'ramp': if(!rampCands(p,e).length) return false; useful=true; break;
+      case 'wrath': { const mine=boardValue(p,e.what); const theirs=Math.max(...opps(p).map(o=>boardValue(o,e.what))); if(theirs < mine+10) return false; useful=true; break; }
+      case 'sweep': { const kill=q=>q.bf.filter(c=>isCreature(c.def)&&tou(c)<=e.n&&!hasKw(c,'Indestructible')).reduce((s,c)=>s+value(c),0); if(Math.max(...opps(p).map(kill)) < kill(p)+8) return false; useful=true; break; }
+      case 'reanimate': if(!gyCreatures(p,e).some(c=>cardValue(c)>=5)) return false; useful=true; break;
+      case 'regrowth': if(!p.gy.some(cardFilterForRegrowth(e))) return false; useful=true; break;
+      case 'tutor': if(!p.lib.some(cardFilter(e.filter))) return false; useful=true; break;
+      case 'counter': if(e.mode!=='self' && e.mode!=='opp' && !p.bf.some(c=>isCreature(c.def))) return false; useful=true; break;
+      case 'pump': if(!p.bf.some(c=>isCreature(c.def))) return false; break;
+      case 'edictOpp': if(!opps(p).some(o=>o.bf.some(targetFilter(e.filter)))) return false; useful=true; break;
+      case 'counterspell': return false;
+      default: useful=true;
     }
-    else if(['destroy','exile','bounce'].includes(e.do)){
-      const t=bestTargetFor(p,e);
-      if(t){ const L={destroy:'破壊',exile:'追放',bounce:'手札に戻'}; log(`${nm(src)}：${G.players[t.ctrl].name}の${nm(t)}を${L[e.do]}した`); moveTo(t, e.do==='exile'?'ex':e.do==='bounce'?'hand':'gy'); }
+  }
+  return useful;
+}
+function npcEffectUseful(p, def){ return npcFxUseful(p, def.fx, null); }
+const cardFilterForRegrowth = e => { const f=String(e.filter||'').trim(); return f ? cardFilter(f) : (()=>true); };
+
+/* pick===undefined のときはNPC（AI）が自動で対象を選ぶ */
+function applyEffect(p, src, e, pick){
+  const auto = pick===undefined;
+  const who = p.name;
+  switch(e.do){
+    case 'draw': drawN(p,e.n); log(`${who}はカードを${e.n}枚引いた`); break;
+    case 'gain': p.life+=e.n; log(`${who}は${e.n}点のライフを得た`); break;
+    case 'drain': opps(p).forEach(o=>o.life-=e.n); log(`各対戦相手は${e.n}点のライフを失った`); break;
+    case 'ramp': {
+      const picks=[].concat(auto?aiRampPicks(p,e):(pick||[])).filter(c=>c && c.zone==='lib');
+      picks.forEach((land,i)=>{
+        if(e.toHand && picks.length>1 && i===picks.length-1){ moveTo(land,'hand'); log(`${who}は${nm(land)}を手札に加えた`); }
+        else { moveTo(land,'bf',{tapped:e.tapped}); log(`${who}は${nm(land)}を戦場に出した`); }
+      });
+      shuffle(p.lib); break;
     }
-    else if(e.do==='wrath'){
-      const all=G.players.flatMap(q=>q.bf.filter(c=>e.what==='nonland'?!isLand(c.def):isCreature(c.def)));
-      all.forEach(c=>{ if(e.how==='gy' && hasKw(c,'Indestructible')) return; moveTo(c,e.how); });
-      log(`${nm(src)}：${e.what==='nonland'?'土地以外のパーマネント':'クリーチャー'}をすべて${e.how==='ex'?'追放':'破壊'}した`);
+    case 'destroy': case 'exile': case 'bounce': {
+      const t=auto?bestTargetFor(p,e):pick; if(!t || t.zone!=='bf') break;
+      if(e.do==='destroy' && hasKw(t,'Indestructible')){ log(`${nm(t)}は破壊されない`); break; }
+      const L={destroy:'破壊',exile:'追放',bounce:'手札に戻'};
+      log(`${nm(src)}：${G.players[t.ctrl].name}の${nm(t)}を${L[e.do]}した`);
+      moveTo(t, e.do==='exile'?'ex':e.do==='bounce'?'hand':'gy'); break;
     }
-    else if(e.do==='damage'){
-      const os=opps(p);
-      if(e.mode==='each opponent'){ os.forEach(o=>applyDamage(src,{player:o.idx},e.n,false)); }
-      else {
-        const face=(e.mode!=='target creature')?os.find(o=>o.life<=e.n):null;
-        const ct=(/creature|any/.test(e.mode))?oppPermanents(p,c=>isCreature(c.def)).filter(c=>tou(c)-c.dmg<=e.n && value(c)>=4).sort((x,y)=>value(y)-value(x))[0]:null;
-        if(face) applyDamage(src,{player:face.idx},e.n,false);
-        else if(ct) applyDamage(src,{card:ct},e.n,false);
-        else if(e.mode!=='target creature'){ const t=os.sort((x,y)=>threatOf(y)-threatOf(x))[0]; if(t) applyDamage(src,{player:t.idx},e.n,false); }
-      }
+    case 'wrath': {
+      const what=e.what;
+      const f = /nonland/.test(what)?(c=>!isLand(c.def)) : /creature/.test(what)?(c=>isCreature(c.def)) : (c=>new RegExp(what.replace(/s\b/g,'').split(' and ').join('|'),'i').test(c.def.type));
+      G.players.flatMap(q=>q.bf.filter(f)).forEach(c=>{ if(e.how==='gy' && hasKw(c,'Indestructible')) return; if(c.zone==='bf') moveTo(c,e.how); });
+      log(`${nm(src)}：${what}をすべて${e.how==='ex'?'追放':'破壊'}した`); break;
     }
-    else if(e.do==='token'){
+    case 'sweep': G.players.flatMap(q=>q.bf.filter(c=>isCreature(c.def))).forEach(c=>{ c.dmg+=e.n; }); log(`${nm(src)}：各クリーチャーに${e.n}点のダメージ`); break;
+    case 'damage': {
+      if(e.mode==='each opponent'){ opps(p).forEach(o=>applyDamage(src,{player:o.idx},e.n,false)); break; }
+      const t=auto?aiDamageTarget(p,e):pick; if(!t) break;
+      if(t.player!=null) applyDamage(src,{player:t.player},e.n,false); else applyDamage(src,{card:t},e.n,false);
+      break;
+    }
+    case 'token': {
       for(let i=0;i<e.n;i++){
         const d=mkDef({name:e.name, ja:e.name+'トークン', type:'Token Creature', power:e.p, toughness:e.t, kw:e.kw});
         const c=inst(d,p.idx,{token:true}); c.zone='bf'; c.tapped=e.tapped; p.bf.push(c);
       }
-      log(`${p.name}は${e.p}/${e.t}のトークンを${e.n}体生成した`);
+      log(`${who}は${e.p}/${e.t}の${e.name}トークンを${e.n}体生成した`); break;
     }
-    else if(e.do==='counter'){
-      const mine=p.bf.filter(c=>isCreature(c.def));
+    case 'treasure': {
+      for(let i=0;i<e.n;i++){
+        const d=mkDef({name:'Treasure', ja:'宝物', type:'Token Artifact — Treasure', produced:['W','U','B','R','G'], oneShot:true, text:'{T}, Sacrifice this artifact: Add one mana of any color.'});
+        const c=inst(d,p.idx,{token:true}); c.zone='bf'; p.bf.push(c);
+      }
+      log(`${who}は宝物トークンを${e.n}個生成した`); break;
+    }
+    case 'counter': {
       let tg=[];
-      if(e.mode==='each') tg=mine;
-      else if(e.mode==='self') tg=card.zone==='bf'?[card]:[];
+      if(e.mode==='each') tg=p.bf.filter(c=>isCreature(c.def));
+      else if(e.mode==='self') tg=(src&&src.zone==='bf')?[src]:[];
+      else if(!auto) tg=pick?[pick]:[];
       else if(e.mode==='opp') tg=oppPermanents(p,c=>isCreature(c.def)).sort((x,y)=>value(x)-value(y)).slice(0,1);
-      else tg=mine.sort((x,y)=>value(y)-value(x)).slice(0,1);
+      else tg=p.bf.filter(c=>isCreature(c.def)).sort((x,y)=>value(y)-value(x)).slice(0,1);
+      tg=tg.filter(c=>c&&c.zone==='bf');
       tg.forEach(c=>c.p1+=e.n);
-      if(tg.length) log(`${tg.map(nm).join('、')}に+1/+1カウンターを${e.n}個置いた`);
+      if(tg.length){
+        log(`${tg.map(nm).join('、')}に+1/+1カウンターを${e.n}個置いた`);
+        new Set(tg.map(c=>c.ctrl)).forEach(i=>fireFor(G.players[i],'counters'));
+      }
+      break;
     }
+    case 'pump': {
+      const t=auto?p.bf.filter(c=>isCreature(c.def)).sort((x,y)=>pow(y)-pow(x))[0]:pick; if(!t||t.zone!=='bf') break;
+      t.tp+=e.p; t.tt+=e.t; if(e.kw?.length) t.kwT=[...(t.kwT||[]),...e.kw.map(k=>k.toLowerCase())];
+      log(`${nm(t)}はターン終了時まで+${e.p}/+${e.t}`); break;
+    }
+    case 'reanimate': {
+      const t=auto?gyCreatures(p,e).sort((x,y)=>cardValue(y)-cardValue(x))[0]:pick; if(!t||t.zone!=='gy') break;
+      moveTo(t,'bf',{ctrl:p.idx}); if(e.loseCmc) p.life-=t.def.cmc;
+      log(`${who}は${nm(t)}を墓地から戦場に戻した`); break;
+    }
+    case 'regrowth': {
+      const picks=[].concat(auto?[...p.gy].filter(cardFilterForRegrowth(e)).sort((x,y)=>cardValue(y)-cardValue(x)).slice(0,e.n):(pick||[]));
+      picks.filter(c=>c&&c.zone==='gy').forEach(c=>{ moveTo(c,'hand',{noRedirect:true}); log(`${who}は${nm(c)}を墓地から手札に戻した`); });
+      break;
+    }
+    case 'tutor': {
+      let t=pick;
+      if(auto){
+        const lands=p.bf.filter(c=>isLand(c.def)).length;
+        const c=p.lib.filter(cardFilter(e.filter));
+        t=c.filter(x=>!isLand(x.def)&&x.def.cmc<=lands+2).sort((x,y)=>cardValue(y)-cardValue(x))[0]||c[0];
+      }
+      if(!t||t.zone!=='lib') break;
+      shuffle(p.lib);
+      if(e.top){ p.lib.splice(p.lib.indexOf(t),1); p.lib.unshift(t); log(`${who}はカードを1枚探してライブラリーの一番上に置いた`); }
+      else { moveTo(t,'hand'); log(`${who}はカードを1枚探して手札に加えた`); }
+      break;
+    }
+    case 'mill': { for(let i=0;i<e.n && p.lib.length;i++){ const c=p.lib[0]; moveTo(c,'gy',{noRedirect:true}); } log(`${who}は${e.n}枚切削した`); break; }
+    case 'discardOpp': {
+      opps(p).forEach(o=>{ for(let i=0;i<e.n && o.hand.length;i++){ const c=o.hand[rnd(o.hand.length)]; moveTo(c,'gy'); log(`${o.name}は${nm(c)}を捨てた`); } }); break;
+    }
+    case 'edictOpp': {
+      opps(p).forEach(o=>{ const c=o.bf.filter(targetFilter(e.filter)).sort((x,y)=>permValue(x)-permValue(y))[0]; if(c){ moveTo(c,'gy'); log(`${o.name}は${nm(c)}を生け贄に捧げた`); } }); break;
+    }
+    case 'landFromHand': {
+      const t=auto?p.hand.find(c=>isLand(c.def)):pick; if(t&&t.zone==='hand'){ moveTo(t,'bf'); log(`${who}は${nm(t)}を戦場に出した`); } break;
+    }
+  }
+  checkSBA();
+}
+
+/* ================= あなた側：対象を選んで自動処理 ================= */
+function targetCands(e, src){
+  const p=ME(); const all=G.players.filter(q=>!q.lost);
+  const lbl=c=>`${nm(c)}（${G.players[c.zone==='bf'?c.ctrl:c.owner].name}）${isCreature(c.def)&&c.zone==='bf'?` ${pow(c)}/${tou(c)}`:''}`;
+  switch(e.do){
+    case 'destroy': case 'exile': case 'bounce': return {multi:1, items:all.flatMap(q=>q.bf).filter(targetFilter(e.filter)).map(c=>({v:c,l:lbl(c)}))};
+    case 'damage':
+      if(e.mode==='each opponent') return null;
+      return {multi:1, items:[...(/player|opponent|any/.test(e.mode)?all.filter(q=>q!==p||/any|player/.test(e.mode)).map(q=>({v:{player:q.idx},l:`${q.name}（ライフ${q.life}）`})):[]),
+                              ...(/creature|any|planeswalker/.test(e.mode)?all.flatMap(q=>q.bf).filter(c=>isCreature(c.def)||isPW(c.def)).map(c=>({v:c,l:lbl(c)})):[])]};
+    case 'counter': if(e.mode==='target'||e.mode==='opp') return {multi:1, items:all.flatMap(q=>q.bf).filter(c=>isCreature(c.def)&&(e.mode==='opp'?c.ctrl!==0:true)).map(c=>({v:c,l:lbl(c)}))}; return null;
+    case 'pump': return {multi:1, items:all.flatMap(q=>q.bf).filter(c=>isCreature(c.def)).map(c=>({v:c,l:lbl(c)}))};
+    case 'reanimate': return {multi:1, items:gyCreatures(p,e).map(c=>({v:c,l:lbl(c)}))};
+    case 'regrowth': return {multi:e.n, items:p.gy.filter(cardFilterForRegrowth(e)).map(c=>({v:c,l:nm(c)}))};
+    case 'tutor': return {multi:1, items:p.lib.filter(cardFilter(e.filter)).sort((x,y)=>nm(x).localeCompare(nm(y),'ja')).map(c=>({v:c,l:nm(c)}))};
+    case 'ramp': return {multi:e.n, items:[...new Map(rampCands(p,e).map(c=>[c.def.name,c])).values()].map(c=>({v:c,l:nm(c)})), note:e.toHand?'最後に選んだ1枚は手札に入ります':''};
+    case 'landFromHand': return {multi:1, items:p.hand.filter(c=>isLand(c.def)).map(c=>({v:c,l:nm(c)}))};
+  }
+  return null;
+}
+function pickTarget(e, src){
+  const tc=targetCands(e,src);
+  if(!tc) return Promise.resolve(undefined);
+  return new Promise(res=>{
+    const sel=[];
+    const draw=()=>{
+      openSheet(`<h3>${esc(nm(src))}：${esc((FX_JA[e.do]||(()=>e.do))(e))}</h3>
+        <p class="dim">${tc.multi>1?`最大${tc.multi}つまで選択`:'対象を選んでください'}${tc.note?`。${esc(tc.note)}`:''}</p>
+        <div class="seg">${tc.items.map((it,i)=>`<button class="chip ${sel.includes(i)?'on':''}" data-pk="${i}">${esc(it.l)}</button>`).join('')||'<span class="dim">選べる対象がありません</span>'}</div>
+        <div class="acts"><button class="btn" data-pok ${tc.multi>1||sel.length?'':'disabled'}>決定</button><button class="btn sec" data-pskip>この効果を飛ばす</button></div>`,
+        ev=>{
+          const b=ev.target.closest('[data-pk]');
+          if(b){ const i=+b.dataset.pk; if(sel.includes(i)) sel.splice(sel.indexOf(i),1); else { if(sel.length>=tc.multi) sel.shift(); sel.push(i); } draw(); return; }
+          if(ev.target.closest('[data-pskip]')){ closeSheet(true); res(null); return; }
+          if(ev.target.closest('[data-pok]')){ closeSheet(true); const v=sel.map(i=>tc.items[i].v); res(tc.multi>1?v:v[0]); }
+        }, true);
+    };
+    draw();
+  });
+}
+async function resolveForHuman(src, fx){
+  const p=ME();
+  for(const e of fx){
+    if(G.over) return;
+    if(e.do==='counterspell'){ log('打ち消しは手動で処理してください'); continue; }
+    const pick=await pickTarget(e, src);
+    if(pick===null) continue;
+    applyEffect(p, src, e, pick===undefined && targetCands(e,src)===null ? undefined : pick);
+  }
+  render();
+}
+function pendingSheet(){
+  const list=G.pending;
+  if(!list.length){ closeSheet(true); render(); return; }
+  openSheet(`<h3>あなたの誘発型能力（${list.length}件）</h3><p class="dim">処理したものから消してください。</p>`+
+    list.map((q,i)=>`<div class="blk"><b>${esc(nm(q.src))}</b><div class="dim" style="margin:3px 0">${esc(q.trig.text)}</div>
+      ${q.trig.fx.length?`<div>自動処理：${esc(fxText(q.trig.fx))}</div>`:'<div class="dim">自動処理できない能力です（手動で処理）</div>'}
+      <div class="acts">${q.trig.fx.length?`<button class="btn sm" data-pa="${i}">自動で処理</button>`:''}<button class="btn sec sm" data-pd="${i}">処理済みにする</button></div></div>`).join('')+
+    `<div class="acts"><button class="btn sec" data-pall>すべて処理済みにする</button></div>`,
+    async e=>{
+      const a=e.target.closest('[data-pa]'), d=e.target.closest('[data-pd]');
+      if(e.target.closest('[data-pall]')){ G.pending=[]; closeSheet(true); render(); return; }
+      if(d){ list.splice(+d.dataset.pd,1); pendingSheet(); render(); return; }
+      if(a){ const q=list.splice(+a.dataset.pa,1)[0]; closeSheet(true); await resolveForHuman(q.src,q.trig.fx); pendingSheet(); }
+    });
+}
+
+/* ================= NPC：打ち消し・装備・プレインズウォーカー ================= */
+function npcTryCounter(caster, card){
+  for(const q of opps(caster)){
+    if(!q.npc) continue;
+    for(const cs of q.hand){
+      const e=(cs.def.fx||[]).find(x=>x.do==='counterspell'); if(!e) continue;
+      if(!spellMatches(e.filter, card.def)) continue;
+      const pay=findPayment(cs.def.cost, manaSources(q), 0); if(!pay) continue;
+      const fx=card.def.fx||[];
+      const hurtsMe = fx.some(x=>x.do==='wrath') || card.isCmd || card.def.cmc>=5 || (fx.some(x=>['destroy','exile','bounce'].includes(x.do)) && q.bf.some(c=>permValue(c)>=6));
+      if(!hurtsMe || Math.random()<0.25) continue;
+      applyPayment(pay); moveTo(cs,'gy');
+      log(`${q.name}は${nm(cs)}で${nm(card)}を打ち消した！`);
+      return q;
+    }
+  }
+  return null;
+}
+function npcEquip(p){
+  for(const eq of p.bf.filter(c=>/\bEquipment\b/.test(c.def.type) && c.def.equipCost)){
+    const cur=eq.attachedTo && G.cards[eq.attachedTo];
+    if(cur && cur.zone==='bf' && cur.ctrl===p.idx) continue;
+    const cre=p.bf.filter(c=>isCreature(c.def)).sort((x,y)=>(pow(y)+(canAttack(y,false)?3:0)+(hasKw(y,'Flying')?2:0))-(pow(x)+(canAttack(x,false)?3:0)+(hasKw(x,'Flying')?2:0)))[0];
+    if(!cre) continue;
+    const pay=findPayment(eq.def.equipCost, manaSources(p), 0); if(!pay) continue;
+    applyPayment(pay); eq.attachedTo=cre.uid;
+    log(`${p.name}は${nm(eq)}を${nm(cre)}に装備した`);
+  }
+}
+function npcUsePW(p){
+  for(const c of p.bf.filter(c=>isPW(c.def))){
+    if(c.pwUsed===G.turn) continue;
+    const loy=c.counters.loyalty||0;
+    const abil=(c.def.pwAbil||[]);
+    const ok=abil.filter(a=>loy+a.cost>=(a.cost<0?1:0));
+    const minus=ok.filter(a=>a.cost<0 && a.fx.length && npcFxUseful(p,a.fx,c)).sort((x,y)=>x.cost-y.cost)[0];
+    const plus=ok.filter(a=>a.cost>=0).sort((x,y)=>(y.fx.length?1:0)-(x.fx.length?1:0)||y.cost-x.cost)[0];
+    const a=minus||plus; if(!a) continue;
+    c.pwUsed=G.turn; c.counters.loyalty=loy+a.cost;
+    log(`${p.name}は${nm(c)}の[${a.cost>0?'+':''}${a.cost}]能力を起動した${a.fx.length?`：${fxText(a.fx)}`:''}`);
+    for(const e of a.fx) applyEffect(p,c,e);
     checkSBA();
   }
+}
+function attachAura(p, card){
+  if(!card.def.grant) return;
+  const t=p.bf.filter(c=>isCreature(c.def)).sort((x,y)=>value(y)-value(x))[0];
+  if(t){ card.attachedTo=t.uid; log(`${nm(card)}を${nm(t)}につけた`); }
 }
 
 function npcChooseSpell(p){
@@ -730,11 +1168,15 @@ function npcChooseSpell(p){
   }
   for(const c of p.hand){
     if(isLand(c.def)) continue;
+    if(c.def.unknown || /\{X\}/.test(c.def.cost)) continue;
     if(isInstSorc(c.def) && !npcEffectUseful(p,c.def)) continue;
-    if(c.def.unknown || /\bAura\b/.test(c.def.type) || /\{X\}/.test(c.def.cost)) continue;
-    if(isInstSorc(c.def) && /counter target spell/i.test(c.def.text)) continue;
+    if(/\bAura\b/.test(c.def.type)){
+      const okRe=(c.def.fx||[]).length && npcEffectUseful(p,c.def);
+      const okGr=c.def.grant && (c.def.grant.p>0||c.def.grant.kw.length) && p.bf.some(x=>isCreature(x.def));
+      if(!okRe && !okGr) continue;
+    }
     const pay=findPayment(c.def.cost, src, 0); if(!pay) continue;
-    let score=c.def.cmc*10 + (c.def.script?.priority||0);
+    let score=c.def.cmc*10 + (c.def.fxPriority||0);
     if(c.def.produced?.length && !isLand(c.def)) score+=25;
     if(/\bEquipment\b/.test(c.def.type)) score-=15;
     cands.push({card:c, pay, score});
@@ -743,16 +1185,19 @@ function npcChooseSpell(p){
   return cands[0]||null;
 }
 async function npcCast(p, {card, pay}){
-  pay.forEach(s=>s.card.tapped=true);
+  applyPayment(pay);
   const fromCz=card.zone==='cz';
   if(fromCz){ p.tax[card.uid]=(p.tax[card.uid]||0)+1; }
   log(`${p.name}は${nm(card)}${fromCz?'（統率者）':''}を唱えた`);
+  fireFor(p,'cast',t=>spellMatches(t.cond.filter, card.def));
+  if(npcTryCounter(p, card)){ moveTo(card,'gy'); checkSBA(); return; }
   if(G.settings.confirmSpells){
     const ok=await choiceSheet(`<h3>${esc(p.name)}が呪文を唱えた</h3>${detailHTML(card)}`, ['解決させる','打ち消す（墓地へ）']);
     if(ok===1){ log(`${nm(card)}は打ち消された`); moveTo(card,'gy'); return; }
   } else await beat();
-  if(isPermanentDef(card.def)){ moveTo(card,'bf'); if(card.def.script?.etb && card.zone==='bf') await runEffects(p,card); }
-  else { if(card.def.script) await runEffects(p,card); if(card.zone==='hand'||card.zone==='cz') moveTo(card,'gy'); }
+  const isAuraRe=/\bAura\b/.test(card.def.type) && (card.def.fx||[]).length;
+  if(isPermanentDef(card.def) && !isAuraRe){ moveTo(card,'bf'); if(/\bAura\b/.test(card.def.type)) attachAura(p,card); checkSBA(); }
+  else { for(const e of (card.def.fx||[])) if(e.do!=='counterspell') applyEffect(p,card,e); if(card.zone==='hand'||card.zone==='cz') moveTo(card,'gy'); checkSBA(); }
 }
 function npcPlayLand(p){
   if(p.landPlayed) return;
@@ -781,7 +1226,10 @@ async function npcTurn(p){
   G.phase='main1'; npcPlayLand(p); await beat(); if(G.over) return;
   for(let i=0;i<15 && !G.over && !p.lost;i++){ const ch=npcChooseSpell(p); if(!ch) break; await npcCast(p,ch); checkSBA(); await beat(); }
   if(G.over || p.lost) return;
+  npcUsePW(p); npcEquip(p); checkSBA();
+  if(G.over || p.lost) return;
   G.phase='combat';
+  fireFor(p,'bcombat'); checkSBA();
   const plan=npcAttackPlan(p);
   if(plan.length) await resolveCombat(p, plan); else log(`${p.name}は攻撃しなかった`);
   if(G.over || p.lost) return;
@@ -816,12 +1264,14 @@ function beginTurn(p){
   p.bf.forEach(c=>{ c.tapped=false; c.sick=false; });
   p.landPlayed=false;
   log(`━━ ${p.name}のターン（ラウンド${G.round}）━━`);
+  G.phase='upkeep'; fireFor(p,'upkeep'); checkSBA();
   G.phase='draw'; drawN(p,1); checkSBA();
   G.phase='main1';
 }
 function endTurn(p){
   G.phase='end';
-  for(const q of G.players) for(const c of q.bf){ c.dmg=0; c.dtHit=false; c.tp=0; c.tt=0; }
+  fireFor(p,'end'); checkSBA();
+  for(const q of G.players) for(const c of q.bf){ c.dmg=0; c.dtHit=false; c.tp=0; c.tt=0; c.kwT=null; }
   if(p.npc){
     while(p.hand.length>7){
       const lands=p.hand.filter(c=>isLand(c.def));
@@ -866,16 +1316,24 @@ function humanCast(c, auto){
       choiceSheet(`<h3>マナが足りないかもしれません</h3><p class="dim">コスト ${esc(c.def.cost||'なし')}${extra?` ＋統率者税{${extra}}`:''}。自動支払いできる組み合わせが見つかりませんでした。</p>`, ['そのまま唱える（マナは手動）','やめる']).then(r=>{ if(r===0) finishCast(c,fromCz); });
       return;
     }
-    pay.forEach(s=>s.card.tapped=true);
+    applyPayment(pay);
   }
   finishCast(c, fromCz);
 }
 function finishCast(c, fromCz){
   const p=ME();
   if(fromCz) p.tax[c.uid]=(p.tax[c.uid]||0)+1;
-  if(isPermanentDef(c.def)){ moveTo(c,'bf'); log(`あなたは${nm(c)}を唱えた`); }
-  else { moveTo(c,'gy'); log(`あなたは${nm(c)}を唱えた（効果は手動で処理）`); }
+  log(`あなたは${nm(c)}を唱えた`);
+  fireFor(p,'cast',t=>spellMatches(t.cond.filter, c.def));
+  if(npcTryCounter(p, c)){ moveTo(c,'gy'); checkSBA(); closeSheet(); render(); return; }
+  const fx=(c.def.fx||[]).filter(e=>e.do!=='counterspell');
+  const isAuraRe=/\bAura\b/.test(c.def.type) && fx.length;
+  if(isPermanentDef(c.def) && !isAuraRe){ moveTo(c,'bf'); checkSBA(); closeSheet(); render(); return; }
+  moveTo(c,'gy'); checkSBA();
   closeSheet(); render();
+  if(fx.length && G.settings.assist && G.mode==='assist'){
+    choiceSheet(`<h3>${esc(nm(c))}</h3><p>${esc(fxText(fx))}</p><p class="dim">自動で処理しますか？（対象は自分で選びます）</p>`, ['自動で処理','自分で処理する']).then(r=>{ if(r===0) resolveForHuman(c,fx); });
+  }
 }
 function humanBlocks(dp, ap, attacks){
   return new Promise(resolve=>{
@@ -957,17 +1415,19 @@ function humanEndTurn(){
 /* ================= 表示 ================= */
 function tileHTML(c, o={}){
   const d=c.def;
-  const bg=d.art?`style="background-image:url('${esc(d.art)}')"`:'';
+  const bg=d.thumb?`style="background-image:url('${esc(d.thumb)}');background-size:contain"`:'';
   const cr=isCreature(d);
   const pt=cr?`<div class="pt ${c.dmg?'dmg':''}">${pow(c)}/${tou(c)-c.dmg}</div>`:(isPW(d)&&c.zone==='bf'?`<div class="pt">◆${c.counters.loyalty??d.loyalty}</div>`:'');
   const atk=G.ui.attack?.map[c.uid]!=null?`<div class="ab">→${esc(G.players[G.ui.attack.map[c.uid]].name)}</div>`:'';
-  const badges=[c.isCmd?'統率者':'', c.p1?`+${c.p1}`:'', c.token?'トークン':'', (c.zone==='bf'&&cr&&c.sick&&!hasKw(c,'Haste'))?'召喚酔い':''].filter(Boolean).join(' ');
-  const ty=!d.art?`<div class="ty">${esc((d.jtype||d.type||'').slice(0,18))}</div>`:'';
-  return `<div class="tile ${c.tapped?'tp':''} ${o.sel?'sel':''} ${atk?'atk':''}" ${o.noact?`data-uid="${c.uid}"`:`data-a="card" data-uid="${c.uid}"`}><div class="in" ${bg}>${ty}${badges?`<div class="bd">${badges}</div>`:''}${d.cost?`<div class="c">${esc(d.cost.replace(/[{}]/g,''))}</div>`:''}${pt}<div class="n">${esc(nm(c))}</div>${atk}</div></div>`;
+  const nAtt=c.zone==='bf'?attachmentsOf(c).length:0;
+  const badges=[c.isCmd?'統率者':'', c.p1?`+${c.p1}`:'', nAtt?`装備${nAtt}`:'', c.attachedTo?'装着中':'', c.token?'トークン':'', (c.zone==='bf'&&cr&&c.sick&&!hasKw(c,'Haste'))?'召喚酔い':''].filter(Boolean).join(' ');
+  const ty=!d.thumb?`<div class="ty">${esc((d.jtype||d.type||'').slice(0,18))}</div>`:'';
+  return `<div class="tile ${c.tapped?'tp':''} ${o.sel?'sel':''} ${atk?'atk':''}" ${o.noact?`data-uid="${c.uid}"`:`data-a="card" data-uid="${c.uid}"`}><div class="in" ${bg}>${ty}${badges?`<div class="bd">${badges}</div>`:''}${d.cost&&!d.thumb?`<div class="c">${esc(d.cost.replace(/[{}]/g,''))}</div>`:''}${pt}${d.thumb?'':`<div class="n">${esc(nm(c))}</div>`}${atk}</div></div>`;
 }
 function chipHTML(c){
   const d=c.def; const cr=isCreature(d);
-  return `<button class="chip ${c.tapped?'tp':''} ${c.isCmd?'cmd':''} ${c.attacking?'atk':''}" data-a="card" data-uid="${c.uid}">${esc(nm(c))}${cr?` ${pow(c)}/${tou(c)-c.dmg}`:''}${isPW(d)?` ◆${c.counters.loyalty??''}`:''}</button>`;
+  const nAtt=attachmentsOf(c).length;
+  return `<button class="chip ${c.tapped?'tp':''} ${c.isCmd?'cmd':''} ${c.attacking?'atk':''}" data-a="card" data-uid="${c.uid}">${nAtt?'⚔':''}${c.p1?`[+${c.p1}]`:''}${esc(nm(c))}${cr?` ${pow(c)}/${tou(c)-c.dmg}`:''}${isPW(d)?` ◆${c.counters.loyalty??''}`:''}</button>`;
 }
 function cmdDmgLine(p){
   const e=Object.entries(p.cmdDmg).filter(([,v])=>v>0);
@@ -1011,6 +1471,10 @@ function myHTML(){
 }
 function barHTML(){
   if(G.over) return `<button class="btn" data-a="fn" data-fn="restart">もう一度</button>`;
+  const pend=G.pending.length?`<button class="btn warn" data-a="fn" data-fn="pending">誘発 ${G.pending.length}</button>`:'';
+  return pend+barMain();
+}
+function barMain(){
   const p=G.players[G.active];
   if(p.npc){
     const waiting=!!waiter;
@@ -1076,6 +1540,9 @@ function detailHTML(c){
     ${text&&!d.img?`<div class="ctext">${esc(text)}</div>`:''}
     ${text&&d.img?`<details><summary class="dim">テキストを表示</summary><div class="ctext">${esc(text)}</div></details>`:''}
     ${st?`<div class="dim" style="margin-top:4px">${esc(st)}</div>`:''}
+    ${c.zone==='bf'&&attachmentsOf(c).length?`<div class="dim">つけられている：${attachmentsOf(c).map(a=>esc(nm(a))).join('、')}</div>`:''}
+    ${c.attachedTo&&G.cards[c.attachedTo]?`<div class="dim">${esc(nm(G.cards[c.attachedTo]))}についている</div>`:''}
+    ${(c.def.fx||[]).length?`<div class="dim">自動処理：${esc(fxText(c.def.fx))}</div>`:''}
     <div class="dim">オーナー：${esc(G.players[c.owner].name)}</div>`;
 }
 function cardSheet(c){
@@ -1096,11 +1563,26 @@ function cardSheet(c){
       acts.push(['+1/+1カウンター＋',()=>{ c.p1++; return 'keep'; }],['+1/+1カウンター－',()=>{ c.p1--; checkSBA(); return 'keep'; }]);
       acts.push(['ダメージ＋1',()=>{ c.dmg++; checkSBA(); return c.zone==='bf'?'keep':''; }],['修整 +1/+1（ターン終了まで）',()=>{ c.tp++; c.tt++; return 'keep'; }]);
     }
+    if(isPW(c.def) && mine) (c.def.pwAbil||[]).forEach(a=>{
+      const lbl=`[${a.cost>0?'+':''}${a.cost}] ${(a.jtext||a.text).replace(/^[^：:]*[：:]\s*/,'').slice(0,26)}`;
+      acts.push([lbl, ()=>{ if((c.counters.loyalty||0)+a.cost<0){ G.ticker='忠誠度が足りません'; return; } c.counters.loyalty=(c.counters.loyalty||0)+a.cost; c.pwUsed=G.turn; log(`あなたは${nm(c)}の[${a.cost}]能力を起動した`); checkSBA(); if(a.fx.length){ setTimeout(()=>resolveForHuman(c,a.fx)); } }]);
+    });
+    if(mine && G.mode==='assist' && (/\bEquipment\b/.test(c.def.type) || /\bAura\b/.test(c.def.type))){
+      const attach=(pay)=>()=>{ const cands=G.players.flatMap(q=>q.bf).filter(x=>isCreature(x.def) && (/\bAura\b/.test(c.def.type) || x.ctrl===0));
+        setTimeout(()=>{ openSheet(`<h3>${esc(nm(c))}をつけるクリーチャー</h3><div class="seg">${cands.map(x=>`<button class="chip" data-at="${x.uid}">${esc(nm(x))} ${pow(x)}/${tou(x)}</button>`).join('')||'<span class="dim">クリーチャーがいません</span>'}</div>`, ev=>{
+          const b=ev.target.closest('[data-at]'); if(!b) return;
+          if(pay){ const py=findPayment(c.def.equipCost, manaSources(p), 0); if(!py){ G.ticker='装備コストを自動で支払えませんでした'; closeSheet(true); render(); return; } applyPayment(py); }
+          c.attachedTo=+b.dataset.at; log(`${nm(c)}を${nm(G.cards[c.attachedTo])}につけた`); closeSheet(true); render(); }); }); return 'keep'; };
+      if(c.def.equipCost) acts.push([`装備する（自動支払い ${c.def.equipCost}）`, attach(true)]);
+      acts.push(['クリーチャーにつける（コスト手動）', attach(false)]);
+      if(c.attachedTo) acts.push(['外す',()=>{ c.attachedTo=null; }]);
+    }
     if(isPW(c.def)) acts.push(['忠誠度＋1',()=>{ c.counters.loyalty=(c.counters.loyalty||0)+1; return 'keep'; }],['忠誠度－1',()=>{ c.counters.loyalty=(c.counters.loyalty||0)-1; checkSBA(); return 'keep'; }]);
     if(c.def.unknown && mine) acts.push(['P/Tを設定',()=>{ ptSheet(c); return 'keep'; }]);
     acts.push(['破壊（墓地へ）',mv('gy',{},`${nm(c)}を墓地に置いた`)],['追放',mv('ex',{},`${nm(c)}を追放した`)],['手札に戻す',mv('hand',{},`${nm(c)}を手札に戻した`)],['ライブラリーの上へ',mv('lib',{},`${nm(c)}をライブラリーの上に置いた`)]);
     if(!mine) acts.push(['コントロールを得る',()=>{ moveTo(c,'bf',{ctrl:0}); log(`あなたは${nm(c)}のコントロールを得た`); }]);
   }
+  if(z==='gy' && mine && (c.def.fx||[]).filter(e=>e.do!=='counterspell').length) acts.push(['この呪文の効果を自動処理',()=>{ setTimeout(()=>resolveForHuman(c,c.def.fx.filter(e=>e.do!=='counterspell'))); }]);
   if(z==='gy'||z==='ex'){
     acts.push(['手札へ',mv('hand')],['戦場へ（あなたのコントロール）',()=>{ moveTo(c,'bf',{ctrl:0,noRedirect:true}); log(`${nm(c)}を戦場に出した`); }],['ライブラリーの上へ',mv('lib')]);
     if(z==='gy') acts.push(['追放',mv('ex',{noRedirect:true})]);
@@ -1139,8 +1621,9 @@ function zoneSheet(p, z){
 }
 const FN={
   next: ()=>resume(),
+  pending: ()=>pendingSheet(),
   pause: ()=>{ G.paused=!G.paused; if(!G.paused) resume(); render(); },
-  toCombat: ()=>{ G.phase='combat'; const os=opps(ME()); G.ui.attack={map:{}, cur:os.sort((a,b)=>a.life-b.life)[0]?.idx}; render(); },
+  toCombat: ()=>{ G.phase='combat'; fireFor(ME(),'bcombat'); checkSBA(); const os=opps(ME()); G.ui.attack={map:{}, cur:os.sort((a,b)=>a.life-b.life)[0]?.idx}; render(); },
   setDef: el=>{ G.ui.attack.cur=+el.dataset.p; render(); },
   confirmAttack: ()=>confirmAttack(),
   cancelAttack: ()=>{ G.ui.attack=null; G.phase='main2'; render(); },
@@ -1176,12 +1659,14 @@ const FN={
     openSheet(`<h3>設定</h3>
       <div class="rowt">NPCの進行速度</div><div class="seg">${[['fast','速い'],['normal','普通'],['slow','遅い'],['step','1手ずつ']].map(([k,l])=>`<button class="chip ${s.speed===k?'on':''}" data-sp="${k}">${l}</button>`).join('')}</div>
       <p><label><input type="checkbox" id="cs" ${s.confirmSpells?'checked':''}> NPCが呪文を唱えるたびに確認する（打ち消しなどの対応用）</label></p>
+      ${G.mode==='assist'?`<p><label><input type="checkbox" id="as" ${s.assist?'checked':''}> 自分の呪文を唱えたとき、効果の自動処理を提案する</label></p>`:'<p class="dim">自分のカード：すべて手動モード</p>'}
       <p><label><input type="checkbox" id="ca" ${s.cmdAuto?'checked':''}> あなたの統率者が墓地・追放に行くとき自動で統率領域に戻す</label></p>
       <div class="acts"><button class="btn sec" data-a2="restart">最初の画面に戻る</button><button class="btn" data-a2="close">閉じる</button></div>`, e=>{
       const sp=e.target.closest('[data-sp]');
       if(sp){ s.speed=sp.dataset.sp; store.set('settings',s); FN.settingsSheet(); if(s.speed!=='step') resume(); return; }
       if(e.target.id==='cs'){ s.confirmSpells=e.target.checked; store.set('settings',s); }
       if(e.target.id==='ca'){ s.cmdAuto=e.target.checked; store.set('settings',s); }
+      if(e.target.id==='as'){ s.assist=e.target.checked; store.set('settings',s); }
       const a=e.target.closest('[data-a2]');
       if(a){ closeSheet(); if(a.dataset.a2==='restart'){ G.over=true; FN.restart(); } }
     });
@@ -1230,11 +1715,14 @@ function renderSetup(){
     res=`<h2>読み込み結果</h2>
       <div>合計 <b>${total}</b> 枚${total!==100?` <span class="miss">（100枚ではありません）</span>`:''}</div>
       ${r.offline?`<div class="miss">カード情報サーバー（Scryfall）に接続できなかったため、カード名だけで読み込みました。土地以外のP/Tなどは対局中に設定できます。</div>`:''}
+      ${r.anyFailed?`<div class="miss">通信が混み合っていて、取得できなかったカードが${r.anyFailed}種類あります（NPCのデッキ分を含みます）。少し待ってからもう一度「デッキを読み込む」を押すと、残りの分だけ取得し直します。</div>`:''}
+      ${r.failed?.length?`<div class="dim">取得できなかったカード：${r.failed.map(esc).join('、')}</div>`:''}
       ${r.missing.length?`<div class="miss">見つからなかったカード（${r.missing.length}）：${r.missing.map(esc).join('、')}</div><div class="dim">「1 日本語名/English Name」の形で英語名を添えると確実に見つかります。</div>`:''}
       <h2>統率者</h2>
       ${r.commanders.length?`<div>${r.commanders.map(d=>`<b>${esc(d.ja)}</b>`).join(' ＋ ')}</div>`:
         `<div class="dim">統率者の指定がありません。下から選んでください（最大2枚）</div><div class="chips">${r.cands.map((d,i)=>`<button class="chip ${SETUP.cmdPick.includes(i)?'on':''}" data-cp="${i}">${esc(d.ja)}</button>`).join('')}</div>`}
-      <div style="margin-top:14px"><button class="btn" data-s="start" ${(!r.commanders.length&&!SETUP.cmdPick.length)?'disabled':''}>ゲーム開始</button></div>`;
+      <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn" data-s="start" ${(!r.commanders.length&&!SETUP.cmdPick.length)?'disabled':''}>ゲーム開始</button>
+        ${r.offline?'':`<button class="btn sec" data-s="cover">効果の対応状況を見る</button>`}</div>`;
   }
   $('#app').innerHTML=`<div class="wrap">
     <h1>統率者戦 1人回し</h1>
@@ -1252,8 +1740,12 @@ function renderSetup(){
     </div>
     <div class="dim" style="margin-top:6px">${esc(SETUP.status)}</div>
     ${res}
+    <h2>自分のカード効果の処理</h2>
+    <div class="seg">${[['assist','補助あり（自動処理を提案）'],['manual','すべて手動']].map(([k,l])=>`<button class="chip ${store.get('mode','assist')===k?'on':''}" data-md="${k}">${l}</button>`).join('')}</div>
+    <div class="dim" style="margin-top:4px">${store.get('mode','assist')==='manual'?'自分のカードの効果・誘発・装備・全体強化はすべて自分で操作します（NPC側は自動のまま）。':'呪文の効果や誘発型能力を、対象を選ぶだけで自動処理できます。'}</div>
     <h2>対戦相手</h2>
     ${npcSummary()}
+    <p class="dim" style="margin-top:24px;line-height:1.6">カード情報・画像：<a href="https://scryfall.com" style="color:var(--dim)">Scryfall</a> を利用しています。<br>本ツールは非公式のファンツールで、Wizards of the Coast および Scryfall とは関係ありません。マジック：ザ・ギャザリングのカード名・画像の権利は Wizards of the Coast に帰属します。</p>
   </div>`;
 }
 async function loadDeck(){
@@ -1263,25 +1755,27 @@ async function loadDeck(){
   SETUP.busy=true; SETUP.result=null; SETUP.cmdPick=[]; renderSetup();
   const npcParsed=NPC_LISTS.map(t=>t?parseDeck(t):null);
   const all=[...parsed.commander, ...parsed.main, ...npcParsed.filter(Boolean).flatMap(d=>[...d.commander,...d.main])];
-  let map, offline=false;
-  try{ map=await resolveCards(all, s=>{ SETUP.status=s; const el=document.querySelector('.wrap .dim:nth-of-type(3)'); renderSetup(); }); }
+  let map, offline=false, failed=new Set();
+  try{ const r=await resolveCards(all, s=>{ SETUP.status=s; renderSetup(); }); map=r.map; failed=new Set(r.failed); }
   catch(err){ offline=true; map=new Map(); }
   const key=e=>e.ja||e.en; const missing=[];
-  const get=e=>{ const k=key(e); let d=map.get(k); if(!d){ d=basicByName(k)||placeholderDef(e); if(!basicByName(k)&&!offline) missing.push(k); } return d; };
+  const get=e=>{ const k=key(e); let d=map.get(k); if(!d){ d=basicByName(k)||placeholderDef(e); if(!basicByName(k)&&!offline&&!failed.has(k)) missing.push(k); } return d; };
   const commanders=parsed.commander.flatMap(e=>Array.from({length:e.n},()=>get(e)));
   const main=parsed.main.flatMap(e=>Array.from({length:e.n},()=>mkDef(get(e))));
   const cands=[...new Map(main.filter(d=>isLegendary(d)||d.unknown).filter(d=>!isLand(d)).map(d=>[d.ja,d])).values()];
-  SETUP.result={commanders, main, missing:[...new Set(missing)], offline, cands};
+  const myFailed=[...new Set([...parsed.commander,...parsed.main].map(key).filter(k=>failed.has(k)))];
+  SETUP.result={commanders, main, missing:[...new Set(missing)], failed:myFailed, anyFailed:failed.size, offline, cands};
   NPC_READY=npcParsed.map((d,i)=>{
     if(!d || offline) return null;
     const miss=[];
-    const g=e=>{ const k=key(e); const x=map.get(k)||basicByName(k); if(!x){ miss.push(k); return placeholderDef(e); } return x; };
+    const fl=[];
+    const g=e=>{ const k=key(e); const x=map.get(k)||basicByName(k); if(!x){ (failed.has(k)?fl:miss).push(k); return placeholderDef(e); } return x; };
     const cmds=d.commander.flatMap(e=>Array.from({length:e.n},()=>prepareNpcDef(mkDef(g(e)))));
     const mn=d.main.flatMap(e=>Array.from({length:e.n},()=>prepareNpcDef(mkDef(g(e)))));
     const cn=cmds[0]?.ja||'?';
-    return {name:(cn.split('、').pop()||cn), deckName:cn+'デッキ', commanders:cmds, main:mn, missing:[...new Set(miss)]};
+    return {name:(cn.split('、').pop()||cn), deckName:cn, commanders:cmds, main:mn, missing:[...new Set(miss)], failed:[...new Set(fl)]};
   });
-  SETUP.busy=false; SETUP.status=offline?'オフラインで読み込みました':'読み込み完了';
+  SETUP.busy=false; SETUP.status=offline?'オフラインで読み込みました':(failed.size?`読み込み完了（通信エラーで${failed.size}種類を取得できませんでした）`:'読み込み完了');
   renderSetup();
 }
 document.addEventListener('input', e=>{ if(e.target.id==='deck') store.set('deck', e.target.value); });
@@ -1297,16 +1791,55 @@ function npcSummary(){
   const ph=PLACEHOLDER_DECKS.map(f=>f());
   return [0,1,2].map(i=>{
     const r=NPC_READY[i];
-    if(r) return `<div>NPC${i+1}：<b>${esc(r.deckName)}</b>（${r.commanders.length+r.main.length}枚）${r.missing.length?`<div class="miss">見つからない：${r.missing.map(esc).join('、')}</div>`:''}</div>`;
+    if(r) return `<div>NPC${i+1}：<b>${esc(r.deckName)}</b>（${r.commanders.length+r.main.length}枚）${r.missing.length?`<div class="miss">見つからない：${r.missing.map(esc).join('、')}</div>`:''}${r.failed.length?`<div class="dim">通信エラーで未取得：${r.failed.length}種類</div>`:''}</div>`;
     const planned=NPC_LISTS[i]?'（指定デッキは「デッキを読み込む」で準備されます）':'（デッキ未指定）';
     return `<div>NPC${i+1}：仮デッキ「${esc(ph[i].deckName)}」<span class="dim">${planned}</span></div>`;
   }).join('');
 }
+function coverageDecks(){
+  const r=SETUP.result; const out=[];
+  if(r) out.push({name:'あなた', defs:[...r.commanders,...r.main]});
+  NPC_READY.forEach((d,i)=>{ if(d) out.push({name:`NPC${i+1}（${d.name}）`, defs:[...d.commanders,...d.main]}); });
+  return out.map(d=>{
+    const uniq=[...new Map(d.defs.map(x=>[x.ja||x.name, x])).values()].map(x=>prepareDef(mkDef(x)));
+    const rows=uniq.map(x=>({def:x, a:analyzeDef(x)})).filter(r=>r.a.st!=='land');
+    return {name:d.name, rows};
+  });
+}
+function coverageSheet(idx=0){
+  const decks=coverageDecks(); if(!decks.length) return;
+  const d=decks[idx];
+  const L={auto:['✓','自動','var(--green)'], partial:['△','一部','var(--gold)'], none:['×','本体のみ','#ff8a80']};
+  const cnt=k=>d.rows.filter(r=>r.a.st===k).length;
+  const order={none:0,partial:1,auto:2};
+  const rows=[...d.rows].sort((x,y)=>order[x.a.st]-order[y.a.st]);
+  openSheet(`<h3>効果の対応状況</h3>
+    <div class="seg">${decks.map((x,i)=>`<button class="chip ${i===idx?'on':''}" data-cv="${i}">${esc(x.name)}</button>`).join('')}</div>
+    <p>✓自動 <b>${cnt('auto')}</b>　△一部 <b>${cnt('partial')}</b>　×本体のみ <b>${cnt('none')}</b>（土地を除く）</p>
+    <p class="dim">NPCは✓と△の自動部分を使います。×のカードは、クリーチャーなら体だけ出して戦い、それ以外の呪文は使いません。あなたのカードは、✓や△の部分を唱えたときに自動処理できます。</p>
+    <div class="acts"><button class="btn sm" data-cp>未対応カードの英語テキストをコピー</button></div><div id="cpmsg" class="dim"></div>
+    ${rows.map(r=>`<div class="blk"><span style="color:${L[r.a.st][2]};font-weight:700">${L[r.a.st][0]}</span> <b>${esc(r.def.ja)}</b> <span class="dim">${esc(r.def.name)}</span>
+      ${r.a.st!=='auto'?`<div class="dim" style="margin-top:3px">${r.a.lines.map(l=>`${l.ok?'✓':'×'} ${esc(l.l)}`).join('<br>')}</div>`:(r.def.fx?.length||r.def.trig?.length?`<div class="dim">${esc(fxText([...(r.def.fx||[]),...(r.def.trig||[]).flatMap(t=>t.fx)]))}</div>`:'')}</div>`).join('')}`,
+    e=>{
+      const b=e.target.closest('[data-cv]'); if(b){ coverageSheet(+b.dataset.cv); return; }
+      if(e.target.closest('[data-cp]')){
+        const txt=`【${d.name}】未対応・一部対応のカード\n\n`+rows.filter(r=>r.a.st!=='auto').map(r=>`${r.def.ja} / ${r.def.name}\n${r.def.type}\n${stripReminder(r.def.text)}\n`).join('\n');
+        const done=()=>{ $('#cpmsg').textContent='コピーしました。チャットに貼り付けてください。'; };
+        if(navigator.clipboard?.writeText) navigator.clipboard.writeText(txt).then(done).catch(()=>showCopyBox(txt)); else showCopyBox(txt);
+      }
+    });
+}
+function showCopyBox(txt){
+  openSheet(`<h3>テキスト</h3><p class="dim">全選択してコピーしてください。</p><textarea id="cpbox" style="min-height:300px">${esc(txt)}</textarea>`);
+  setTimeout(()=>{ const t=$('#cpbox'); if(t){ t.focus(); t.select(); } },50);
+}
 function setupClick(e){
+  const md=e.target.closest('[data-md]'); if(md){ store.set('deck',$('#deck').value); store.set('mode',md.dataset.md); renderSetup(); return; }
   const s=e.target.closest('[data-s]'); const cp=e.target.closest('[data-cp]');
   if(cp){ const i=+cp.dataset.cp; const a=SETUP.cmdPick; a.includes(i)?a.splice(a.indexOf(i),1):(a.length<2&&a.push(i)); store.set('deck',$('#deck').value); renderSetup(); return; }
   if(!s) return;
   if(s.dataset.s==='load') loadDeck();
+  if(s.dataset.s==='cover') coverageSheet(0);
   if(s.dataset.s==='teval'){ store.set('deck', TEVAL_SAMPLE); renderSetup(); }
   if(s.dataset.s==='sample'){ const d=PLACEHOLDER_DECKS[rnd(3)](); newGame({commanders:d.commanders, main:d.main}, currentNpcDecks()); render(); startGame(); }
   if(s.dataset.s==='start'){
