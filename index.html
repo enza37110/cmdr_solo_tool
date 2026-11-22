@@ -9,7 +9,7 @@
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;font-size:14px;-webkit-text-size-adjust:100%}
 button{font:inherit;color:inherit;cursor:pointer}
-.wrap{max-width:900px;margin:0 auto;padding:8px 8px 90px}
+.wrap{max-width:var(--maxw,900px);margin:0 auto;padding:8px 8px 90px}
 h1{font-size:20px;margin:8px 0 4px}h2{font-size:16px;margin:16px 0 6px}h3{font-size:15px;margin:4px 0 10px}
 .dim{color:var(--dim);font-size:12px}
 .btn{background:var(--acc);border:none;border-radius:8px;padding:10px 14px;color:#fff;font-weight:600}
@@ -54,7 +54,7 @@ input,select{background:#0e1014;color:var(--tx);border:1px solid var(--line);bor
 .bar{position:fixed;left:0;right:0;bottom:0;z-index:6;background:rgba(20,22,27,.97);border-top:1px solid var(--line);padding:8px;padding-bottom:calc(8px + env(safe-area-inset-bottom));display:flex;gap:6px;flex-wrap:wrap;justify-content:center}
 .modal{position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.6);display:flex;align-items:flex-end;justify-content:center}
 .modal.hidden{display:none}
-.sheet{background:var(--panel);width:100%;max-width:560px;max-height:88vh;overflow:auto;border-radius:14px 14px 0 0;padding:14px;padding-bottom:calc(14px + env(safe-area-inset-bottom))}
+.sheet{background:var(--panel);width:100%;max-width:var(--sheetw,560px);max-height:88vh;overflow:auto;border-radius:14px 14px 0 0;padding:14px;padding-bottom:calc(14px + env(safe-area-inset-bottom))}
 @media(min-width:700px){.modal{align-items:center}.sheet{border-radius:14px}}
 .acts{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px}
 .acts .btn{font-size:13px;padding:9px 8px}
@@ -1553,9 +1553,13 @@ function barMain(){
   if(G.phase==='main1') return `<button class="btn" data-a="fn" data-fn="toCombat">戦闘へ</button><button class="btn sec" data-a="fn" data-fn="endTurn">ターン終了</button>`;
   return `<button class="btn" data-a="fn" data-fn="endTurn">ターン終了</button>`;
 }
+const WIDTHS={std:['900px','560px'], wide:['1400px','760px'], full:['100%','900px']};
 function applyCardScale(){
-  const v=(G?G.settings.cardScale:store.get('settings',{}).cardScale)||1;
-  document.documentElement.style.setProperty('--cs', String(v));
+  const st=G?G.settings:store.get('settings',{});
+  document.documentElement.style.setProperty('--cs', String(st.cardScale||1));
+  const w=WIDTHS[st.width]||WIDTHS.std;
+  document.documentElement.style.setProperty('--maxw', w[0]);
+  document.documentElement.style.setProperty('--sheetw', w[1]);
 }
 function render(){
   applyCardScale();
@@ -1729,6 +1733,7 @@ const FN={
     const s=G.settings;
     openSheet(`<h3>設定</h3>
       <div class="rowt">NPCの進行速度</div><div class="seg">${[['fast','速い'],['normal','普通'],['slow','遅い'],['step','1手ずつ']].map(([k,l])=>`<button class="chip ${s.speed===k?'on':''}" data-sp="${k}">${l}</button>`).join('')}</div>
+      <div class="rowt" style="margin-top:10px">表示領域の幅（PC向け）</div><div class="seg">${[['std','標準'],['wide','広い'],['full','画面いっぱい']].map(([k,l])=>`<button class="chip ${(s.width||'std')===k?'on':''}" data-wd="${k}">${l}</button>`).join('')}</div>
       <div class="rowt" style="margin-top:10px">カードの表示サイズ</div><div class="seg">${[[1,'標準'],[1.5,'1.5倍'],[2,'2倍']].map(([k,l])=>`<button class="chip ${(s.cardScale||1)===k?'on':''}" data-cz="${k}">${l}</button>`).join('')}</div>
       <p><label><input type="checkbox" id="cs" ${s.confirmSpells?'checked':''}> NPCが呪文を唱えるたびに確認する（打ち消しなどの対応用）</label></p>
       ${G.mode==='assist'?`<p><label><input type="checkbox" id="as" ${s.assist?'checked':''}> 自分の呪文を唱えたとき、効果の自動処理を提案する</label></p>`:'<p class="dim">自分のカード：すべて手動モード</p>'}
@@ -1736,6 +1741,8 @@ const FN={
       <div class="acts"><button class="btn sec" data-a2="restart">最初の画面に戻る</button><button class="btn" data-a2="close">閉じる</button></div>`, e=>{
       const sp=e.target.closest('[data-sp]');
       if(sp){ s.speed=sp.dataset.sp; store.set('settings',s); FN.settingsSheet(); if(s.speed!=='step') resume(); return; }
+      const wd=e.target.closest('[data-wd]');
+      if(wd){ s.width=wd.dataset.wd; store.set('settings',s); render(); FN.settingsSheet(); return; }
       const cz=e.target.closest('[data-cz]');
       if(cz){ s.cardScale=+cz.dataset.cz; store.set('settings',s); render(); FN.settingsSheet(); return; }
       if(e.target.id==='cs'){ s.confirmSpells=e.target.checked; store.set('settings',s); }
@@ -1828,6 +1835,9 @@ function renderSetup(){
     </div>
     ${progHTML()}
     ${res}
+    <h2>表示領域の幅（PC向け）</h2>
+    <div class="seg">${[['std','標準'],['wide','広い'],['full','画面いっぱい']].map(([k,l])=>`<button class="chip ${(store.get('settings',{}).width||'std')===k?'on':''}" data-wds="${k}">${l}</button>`).join('')}</div>
+    <div class="dim" style="margin-top:4px">ゲーム中も右上の「設定」から変更できます。</div>
     <h2>自分のカード効果の処理</h2>
     <div class="seg">${[['assist','補助あり（自動処理を提案）（テスト版）'],['manual','すべて手動']].map(([k,l])=>`<button class="chip ${store.get('mode','assist')===k?'on':''}" data-md="${k}">${l}</button>`).join('')}</div>
     <div class="dim" style="margin-top:4px">${store.get('mode','assist')==='manual'?'自分のカードの効果・誘発・装備・全体強化はすべて自分で操作します（NPC側は自動のまま）。':'【テスト版】呪文の効果や誘発型能力を、対象を選ぶだけで自動処理できます。カードによっては正しく処理できないことがあります。'}</div>
@@ -1924,6 +1934,7 @@ function showCopyBox(txt){
   setTimeout(()=>{ const t=$('#cpbox'); if(t){ t.focus(); t.select(); } },50);
 }
 function setupClick(e){
+  const wds=e.target.closest('[data-wds]'); if(wds){ store.set('deck',$('#deck').value); const st=store.get('settings',{}); st.width=wds.dataset.wds; store.set('settings',st); render(); return; }
   const md=e.target.closest('[data-md]'); if(md){ store.set('deck',$('#deck').value); store.set('mode',md.dataset.md); renderSetup(); return; }
   const s=e.target.closest('[data-s]'); const cp=e.target.closest('[data-cp]');
   if(cp){ const i=+cp.dataset.cp; const a=SETUP.cmdPick; a.includes(i)?a.splice(a.indexOf(i),1):(a.length<2&&a.push(i)); store.set('deck',$('#deck').value); renderSetup(); return; }
