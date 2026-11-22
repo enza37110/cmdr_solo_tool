@@ -37,16 +37,17 @@ input,select{background:#0e1014;color:var(--tx);border:1px solid var(--line);bor
 .row{margin-top:6px}.rowt{font-size:11px;color:var(--dim);margin-bottom:3px}
 .tiles{display:flex;flex-wrap:wrap;gap:6px}
 .tiles.scroll{flex-wrap:nowrap;overflow-x:auto;padding-bottom:4px}
-.tile{flex:0 0 auto;width:72px;height:98px;position:relative}
+:root{--cs:1}
+.tile{flex:0 0 auto;width:calc(72px*var(--cs));height:calc(98px*var(--cs));position:relative}
 .tile .in{position:absolute;inset:0;border-radius:6px;background:var(--panel2) center/cover no-repeat;border:1px solid var(--line);overflow:hidden;transition:transform .15s}
 .tile.tp .in{transform:rotate(90deg) scale(.72);opacity:.75}
-.tile .n{position:absolute;left:0;right:0;bottom:0;background:rgba(0,0,0,.72);font-size:10px;line-height:1.25;padding:2px 3px;max-height:40px;overflow:hidden}
-.tile .c{position:absolute;right:2px;top:2px;background:rgba(0,0,0,.7);font-size:9px;padding:0 3px;border-radius:3px}
-.tile .pt{position:absolute;right:2px;top:44%;background:rgba(0,0,0,.8);font-weight:700;font-size:12px;padding:0 4px;border-radius:3px}
+.tile .n{position:absolute;left:0;right:0;bottom:0;background:rgba(0,0,0,.72);font-size:calc(10px*var(--cs));line-height:1.25;padding:2px 3px;max-height:calc(40px*var(--cs));overflow:hidden}
+.tile .c{position:absolute;right:2px;top:2px;background:rgba(0,0,0,.7);font-size:calc(9px*var(--cs));padding:0 3px;border-radius:3px}
+.tile .pt{position:absolute;right:2px;top:44%;background:rgba(0,0,0,.8);font-weight:700;font-size:calc(12px*var(--cs));padding:0 4px;border-radius:3px}
 .tile .pt.dmg{color:#ff8a80}
-.tile .bd{position:absolute;left:2px;top:2px;font-size:9px;background:var(--gold);color:#000;padding:0 3px;border-radius:3px;font-weight:700}
-.tile .ab{position:absolute;left:0;right:0;top:40%;text-align:center;background:var(--red);font-size:10px;font-weight:700}
-.tile .ty{position:absolute;left:3px;top:16px;right:3px;font-size:9px;color:var(--dim)}
+.tile .bd{position:absolute;left:2px;top:2px;font-size:calc(9px*var(--cs));background:var(--gold);color:#000;padding:0 3px;border-radius:3px;font-weight:700}
+.tile .ab{position:absolute;left:0;right:0;top:40%;text-align:center;background:var(--red);font-size:calc(10px*var(--cs));font-weight:700}
+.tile .ty{position:absolute;left:3px;top:calc(16px*var(--cs));right:3px;font-size:calc(9px*var(--cs));color:var(--dim)}
 .tile.sel .in{outline:3px solid var(--acc)}
 .tile.atk .in{outline:3px solid var(--red)}
 .zbar{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
@@ -1424,11 +1425,18 @@ function humanBlocks(dp, ap, attacks){
 function humanMulligan(){
   return new Promise(resolve=>{
     const p=ME();
+    // カード詳細（戻るボタンで元の画面へ）
+    const detail=(c, back)=>{
+      openSheet(`${detailHTML(c)}<div class="acts"><button class="btn" data-back>戻る</button></div>`,
+        e=>{ if(e.target.closest('[data-back]')) back(); }, true);
+    };
     const ask=()=>{
       openSheet(`<h3>初手（マリガン ${p.mull}回目）</h3><div class="tiles">${p.hand.map(c=>tileHTML(c,{noact:true})).join('')}</div>
-        <p class="dim">土地 ${p.hand.filter(c=>isLand(c.def)).length}枚。統率者戦では最初のマリガンは無料です。</p>
+        <p class="dim">土地 ${p.hand.filter(c=>isLand(c.def)).length}枚。統率者戦では最初のマリガンは無料です。カードをタップすると詳細を見られます。</p>
         <div class="acts"><button class="btn" data-keep>キープ</button><button class="btn sec" data-mull>マリガン</button></div>`,
         e=>{
+          const tc=e.target.closest('[data-uid]');
+          if(tc){ detail(G.cards[+tc.dataset.uid], ask); return; }
           if(e.target.closest('[data-mull]')){
             p.hand.forEach(c=>{c.zone='lib'; p.lib.push(c);}); p.hand=[]; shuffle(p.lib); drawN(p,7); p.mull++; ask();
           } else if(e.target.closest('[data-keep]')){
@@ -1436,9 +1444,12 @@ function humanMulligan(){
             if(!nb){ closeSheet(true); resolve(); return; }
             const pick=new Set();
             const bottom=()=>{
-              openSheet(`<h3>ライブラリーの下に置くカードを${nb}枚選択</h3><div class="tiles">${p.hand.map(c=>tileHTML(c,{noact:true,sel:pick.has(c.uid)})).join('')}</div>
+              openSheet(`<h3>ライブラリーの下に置くカードを${nb}枚選択</h3><p class="dim">カードをタップで選択。「詳細」で中身を確認できます。</p>
+                <div class="tiles">${p.hand.map(c=>`<div style="display:flex;flex-direction:column;align-items:center;gap:3px">${tileHTML(c,{noact:true,sel:pick.has(c.uid)})}<button class="btn sec sm" style="padding:3px 8px;font-size:11px" data-det="${c.uid}">詳細</button></div>`).join('')}</div>
                 <div class="acts"><button class="btn" data-bot ${pick.size!==nb?'disabled':''}>決定</button></div>`,
                 e2=>{
+                  const dt=e2.target.closest('[data-det]');
+                  if(dt){ detail(G.cards[+dt.dataset.det], bottom); return; }
                   const t=e2.target.closest('[data-uid]');
                   if(t){ const u=+t.dataset.uid; pick.has(u)?pick.delete(u):(pick.size<nb&&pick.add(u)); bottom(); }
                   else if(e2.target.closest('[data-bot]') && pick.size===nb){ pick.forEach(u=>moveTo(G.cards[u],'lib',{bottom:true})); closeSheet(true); resolve(); }
@@ -1542,7 +1553,12 @@ function barMain(){
   if(G.phase==='main1') return `<button class="btn" data-a="fn" data-fn="toCombat">戦闘へ</button><button class="btn sec" data-a="fn" data-fn="endTurn">ターン終了</button>`;
   return `<button class="btn" data-a="fn" data-fn="endTurn">ターン終了</button>`;
 }
+function applyCardScale(){
+  const v=(G?G.settings.cardScale:store.get('settings',{}).cardScale)||1;
+  document.documentElement.style.setProperty('--cs', String(v));
+}
 function render(){
+  applyCardScale();
   if(!G){ renderSetup(); return; }
   const p=G.players[G.active];
   $('#app').innerHTML=`
@@ -1708,12 +1724,15 @@ const FN={
     const s=G.settings;
     openSheet(`<h3>設定</h3>
       <div class="rowt">NPCの進行速度</div><div class="seg">${[['fast','速い'],['normal','普通'],['slow','遅い'],['step','1手ずつ']].map(([k,l])=>`<button class="chip ${s.speed===k?'on':''}" data-sp="${k}">${l}</button>`).join('')}</div>
+      <div class="rowt" style="margin-top:10px">カードの表示サイズ</div><div class="seg">${[[1,'標準'],[1.5,'1.5倍'],[2,'2倍']].map(([k,l])=>`<button class="chip ${(s.cardScale||1)===k?'on':''}" data-cz="${k}">${l}</button>`).join('')}</div>
       <p><label><input type="checkbox" id="cs" ${s.confirmSpells?'checked':''}> NPCが呪文を唱えるたびに確認する（打ち消しなどの対応用）</label></p>
       ${G.mode==='assist'?`<p><label><input type="checkbox" id="as" ${s.assist?'checked':''}> 自分の呪文を唱えたとき、効果の自動処理を提案する</label></p>`:'<p class="dim">自分のカード：すべて手動モード</p>'}
       <p><label><input type="checkbox" id="ca" ${s.cmdAuto?'checked':''}> あなたの統率者が墓地・追放に行くとき自動で統率領域に戻す</label></p>
       <div class="acts"><button class="btn sec" data-a2="restart">最初の画面に戻る</button><button class="btn" data-a2="close">閉じる</button></div>`, e=>{
       const sp=e.target.closest('[data-sp]');
       if(sp){ s.speed=sp.dataset.sp; store.set('settings',s); FN.settingsSheet(); if(s.speed!=='step') resume(); return; }
+      const cz=e.target.closest('[data-cz]');
+      if(cz){ s.cardScale=+cz.dataset.cz; store.set('settings',s); render(); FN.settingsSheet(); return; }
       if(e.target.id==='cs'){ s.confirmSpells=e.target.checked; store.set('settings',s); }
       if(e.target.id==='ca'){ s.cmdAuto=e.target.checked; store.set('settings',s); }
       if(e.target.id==='as'){ s.assist=e.target.checked; store.set('settings',s); }
