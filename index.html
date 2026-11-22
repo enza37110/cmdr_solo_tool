@@ -1545,7 +1545,7 @@ function barMain(){
   }
   if(G.phase==='combat' && G.ui.attack){
     const os=opps(ME());
-    return `<div class="seg">${os.map(o=>`<button class="chip ${G.ui.attack.cur===o.idx?'on':''}" data-a="fn" data-fn="setDef" data-p="${o.idx}">→${esc(o.name)}</button>`).join('')}</div>
+    return `<div class="seg" style="align-items:center"><span class="dim">全員で：</span>${os.map(o=>`<button class="chip" data-a="fn" data-fn="atkAll" data-p="${o.idx}">→${esc(o.name)}</button>`).join('')}<button class="chip" data-a="fn" data-fn="atkClear">選択解除</button></div>
       <button class="btn" data-a="fn" data-fn="confirmAttack">攻撃確定（${Object.keys(G.ui.attack.map).length}体）</button>
       <button class="btn sec" data-a="fn" data-fn="cancelAttack">攻撃しない</button>`;
   }
@@ -1562,7 +1562,7 @@ function render(){
   if(!G){ renderSetup(); return; }
   const p=G.players[G.active];
   $('#app').innerHTML=`
-    <div class="top"><div class="t">R${G.round}・${esc(p.name)}のターン・${PH[G.phase]||''}${G.phase==='combat'&&G.ui.attack&&!p.npc?'（攻撃するクリーチャーをタップ）':''}</div>
+    <div class="top"><div class="t">R${G.round}・${esc(p.name)}のターン・${PH[G.phase]||''}${G.phase==='combat'&&G.ui.attack&&!p.npc?'（クリーチャーをタップして攻撃先を選択）':''}</div>
       <button class="btn sec sm" data-a="fn" data-fn="logSheet">ログ</button>
       <button class="btn sec sm" data-a="fn" data-fn="settingsSheet">設定</button></div>
     <div class="ticker">${esc(G.ticker)}</div>
@@ -1689,8 +1689,13 @@ const FN={
   next: ()=>resume(),
   pending: ()=>pendingSheet(),
   pause: ()=>{ G.paused=!G.paused; if(!G.paused) resume(); render(); },
-  toCombat: ()=>{ G.phase='combat'; fireFor(ME(),'bcombat'); checkSBA(); const os=opps(ME()); G.ui.attack={map:{}, cur:os.sort((a,b)=>a.life-b.life)[0]?.idx}; render(); },
-  setDef: el=>{ G.ui.attack.cur=+el.dataset.p; render(); },
+  toCombat: ()=>{ G.phase='combat'; fireFor(ME(),'bcombat'); checkSBA(); G.ui.attack={map:{}}; render(); },
+  atkAll: el=>{
+    const d=+el.dataset.p; const m=G.ui.attack.map;
+    ME().bf.filter(c=>canAttack(c,false)).forEach(c=>m[c.uid]=d);
+    render();
+  },
+  atkClear: ()=>{ G.ui.attack.map={}; render(); },
   confirmAttack: ()=>confirmAttack(),
   cancelAttack: ()=>{ G.ui.attack=null; G.phase='main2'; render(); },
   endTurn: ()=>humanEndTurn(),
@@ -1752,9 +1757,13 @@ document.addEventListener('click', e=>{
     const c=G.cards[+el.dataset.uid]; if(!c) return;
     if(G.ui.attack && c.ctrl===0 && c.zone==='bf' && isCreature(c.def)){
       if(!canAttack(c,false)){ G.ticker=`${nm(c)}は攻撃できません（タップ中か召喚酔い）`; render(); return; }
+      // タップしたクリーチャーの攻撃先をその場で選ぶ
       const m=G.ui.attack.map;
-      if(m[c.uid]!=null) delete m[c.uid]; else if(G.ui.attack.cur!=null) m[c.uid]=G.ui.attack.cur;
-      render(); return;
+      openSheet(`<h3>${esc(nm(c))}（${pow(c)}/${tou(c)}）の攻撃先</h3>
+        <div class="acts">${opps(ME()).map(o=>`<button class="btn ${m[c.uid]===o.idx?'':'sec'}" data-ad="${o.idx}">→ ${esc(o.name)}（ライフ${o.life}）</button>`).join('')}
+        <button class="btn warn" data-ad="-1">攻撃しない</button></div>`,
+        ev=>{ const b=ev.target.closest('[data-ad]'); if(!b) return; const d=+b.dataset.ad; if(d<0) delete m[c.uid]; else m[c.uid]=d; closeSheet(true); render(); });
+      return;
     }
     cardSheet(c);
   }
