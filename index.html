@@ -55,6 +55,7 @@ input,select{background:#0e1014;color:var(--tx);border:1px solid var(--line);bor
 .bar{position:fixed;left:0;right:0;bottom:0;z-index:6;background:rgba(20,22,27,.97);border-top:1px solid var(--line);padding:8px;padding-bottom:calc(8px + env(safe-area-inset-bottom));display:flex;gap:6px;flex-wrap:wrap;justify-content:center}
 .modal{position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.6);display:flex;align-items:flex-end;justify-content:center}
 .modal.hidden{display:none}
+.shd{position:sticky;top:-14px;z-index:3;display:flex;justify-content:flex-end;margin:-14px -14px 6px;padding:10px 14px 6px;background:var(--panel);border-bottom:1px solid var(--line)}
 .sheet{background:var(--panel);width:100%;max-width:var(--sheetw,560px);max-height:88vh;overflow:auto;border-radius:14px 14px 0 0;padding:14px;padding-bottom:calc(14px + env(safe-area-inset-bottom))}
 @media(min-width:700px){.modal{align-items:center}.sheet{border-radius:14px}}
 .acts{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px}
@@ -773,6 +774,38 @@ function parseTriggers(def){
   }
   return out;
 }
+/* 護法：Ward {2} / Ward—Pay 3 life. / Ward—Discard a card. / Ward—Sacrifice a creature. など */
+function parseWard(text){
+  const s=stripReminder(text); let m;
+  if((m=s.match(/(?:^|\n|, )Ward ((?:\{[^}]+\})+)/i))) return {mana:m[1]};
+  if((m=s.match(/(?:^|\n|, )Ward\s*[—–-]\s*Pay (\d+) life/i))) return {life:+m[1]};
+  if((m=s.match(/(?:^|\n|, )Ward\s*[—–-]\s*Discard (a|one|two) cards?/i))) return {discard:toN(m[1])};
+  if((m=s.match(/(?:^|\n|, )Ward\s*[—–-]\s*Sacrifice (?:a|an) ([a-z ]+?)\./i))) return {sac:m[1].trim()};
+  if((m=s.match(/(?:^|\n|, )Ward\s*[—–-]\s*([^\n.]+)/i))) return {other:m[1].trim()};
+  return null;
+}
+const wardText = w => !w ? '' : w.mana ? w.mana : w.life!=null ? `${w.life}点のライフを支払う` : w.discard ? `カードを${w.discard}枚捨てる` : w.sac ? `${w.sac}を生け贄に捧げる` : w.other;
+/* NPCが護法を払えそうか（対象選びの段階で使う） */
+function wardAffordable(p, t){
+  const w=t.def.ward; if(!w || t.ctrl===p.idx) return true;
+  if(w.mana) return manaSources(p).length >= cmcOf(w.mana) + (G.evalCost||0);
+  if(w.life!=null) return p.life > w.life + 5;
+  if(w.discard) return p.hand.length > w.discard + (G.evalCost!=null?1:0);
+  if(w.sac) return p.bf.some(targetFilter(w.sac));
+  return false;
+}
+/* NPCが護法の対象を選んだときの支払い。払えなければ打ち消し（false） */
+function npcPayWard(p, t, src){
+  const w=t.def.ward; if(!w || t.ctrl===p.idx) return true;
+  let ok=false;
+  if(w.mana){ const pay=findPayment(w.mana, manaSources(p), 0); if(pay){ applyPayment(pay); ok=true; } }
+  else if(w.life!=null){ if(p.life > w.life){ p.life-=w.life; ok=true; } }
+  else if(w.discard){ if(p.hand.length>=w.discard){ for(let i=0;i<w.discard;i++){ const c=[...p.hand].sort((x,y)=>cardValue(x)-cardValue(y))[0]; moveTo(c,'gy'); } ok=true; } }
+  else if(w.sac){ const c=p.bf.filter(targetFilter(w.sac)).sort((x,y)=>permValue(x)-permValue(y))[0]; if(c){ moveTo(c,'gy'); ok=true; } }
+  if(ok) log(`${p.name}は${nm(t)}の護法（${wardText(w)}）を支払った`);
+  else { log(`${nm(src||t)}は${nm(t)}の護法により打ち消された`); G.fizzle=true; }
+  return ok;
+}
 function parseGrant(text, who){
   const s=stripReminder(text);
   const m=s.match(new RegExp(who+' creature gets ([+-]\\d+)/([+-]\\d+)','i'));
@@ -812,6 +845,7 @@ function prepareDef(def){
   def.grant = /\bEquipment\b/.test(def.type) ? parseGrant(def.text,'equipped') : (/\bAura\b/.test(def.type) ? parseGrant(def.text,'enchanted') : null);
   if(/\bAura\b/.test(def.type)){ const f=parseEffects(def.text).filter(e=>e.do==='reanimate'); if(f.length) def.fx=f; }
   def.anthem = parseAnthem(def.text);
+  def.ward = parseWard(def.text);
   def.pwAbil = isPW(def) ? parsePW(def) : [];
   const eq=stripReminder(def.text).match(/\bEquip(?: [a-z ]+)? ((?:\{[^}]+\})+)/i); def.equipCost=eq?eq[1]:null;
   const mi=manaInfo(def); def.manaN=mi.n; def.oneShot=def.oneShot||mi.oneShot;
@@ -830,7 +864,8 @@ function analyzeDef(def){
     let ok=false;
     if(isInstSorc(def)) ok=(def.fx||[]).length>0;
     else if(/^\{T\}[^:]*:\s*Add/i.test(l) || /^\{T\}, Sacrifice[^:]*: Add/i.test(l)) ok=(def.produced||[]).length>0;
-    else if(l.split(/,\s*/).every(t=>KW_LIST.some(k=>t.toLowerCase().startsWith(k.toLowerCase())))) ok=true;
+    else if(l.split(/,\s*/).every(t=>KW_LIST.some(k=>t.toLowerCase().startsWith(k.toLowerCase())) || (/^ward/i.test(t) && def.ward))) ok=true;
+    else if(/^Ward/i.test(l)) ok=!!def.ward;
     else if(/^Equip/i.test(l)) ok=!!def.equipCost;
     else if(/^(Equipped|Enchanted) creature/i.test(l)) ok=!!def.grant;
     else if(/^Enchant /i.test(l)) ok=true;
@@ -947,7 +982,9 @@ function drainTriggers(){
         if(!q.trig.fx.length) continue;
         log(`【誘発】${p.name}の${nm(q.src)}：${fxText(q.trig.fx)}`);
         G.ctx=q.ctx||null;
-        for(const e of q.trig.fx){ if(e.do!=='counterspell') applyEffect(p, q.src, e); }
+        G.fizzle=false;
+        for(const e of q.trig.fx){ if(G.fizzle) break; if(e.do!=='counterspell') applyEffect(p, q.src, e); }
+        G.fizzle=false;
         G.ctx=null;
       } else {
         if(G.pending.length<40) G.pending.push(q);
@@ -964,7 +1001,7 @@ function permValue(c){ return isCreature(c.def)?value(c):(isLand(c.def)?1:2+c.de
 function cardValue(c){ return isCreature(c.def)?num(c.def.power)+num(c.def.toughness)+c.def.cmc:c.def.cmc+(isLand(c.def)?0.5:0); }
 function bestTargetFor(p, e){
   if(e.do==='destroy'||e.do==='exile'||e.do==='bounce'){
-    let list=oppPermanents(p, targetFilter(e.filter));
+    let list=oppPermanents(p, targetFilter(e.filter)).filter(c=>wardAffordable(p,c));
     if(e.do==='destroy') list=list.filter(c=>!hasKw(c,'Indestructible'));
     return list.sort((x,y)=>permValue(y)-permValue(x))[0]||null;
   }
@@ -989,7 +1026,7 @@ function aiDamageTarget(p,e){
   const face=(e.mode!=='target creature' && e.mode!=='target creature or planeswalker')?os.find(o=>o.life<=e.n):null;
   if(face) return {player:face.idx};
   if(/creature|any/.test(e.mode)){
-    const ct=oppPermanents(p,c=>isCreature(c.def)).filter(c=>tou(c)-c.dmg<=e.n && value(c)>=4).sort((x,y)=>value(y)-value(x))[0];
+    const ct=oppPermanents(p,c=>isCreature(c.def)).filter(c=>tou(c)-c.dmg<=e.n && value(c)>=4 && wardAffordable(p,c)).sort((x,y)=>value(y)-value(x))[0];
     if(ct) return ct;
   }
   if(/player|opponent|any/.test(e.mode)){ const t=[...os].sort((x,y)=>threatOf(y)-threatOf(x))[0]; if(t) return {player:t.idx}; }
@@ -1055,6 +1092,7 @@ function applyEffect(p, src, e, pick){
     }
     case 'destroy': case 'exile': case 'bounce': {
       const t=auto?bestTargetFor(p,e):pick; if(!t || t.zone!=='bf') break;
+      if(p.npc && !npcPayWard(p,t,src)) break;
       if(e.do==='destroy' && hasKw(t,'Indestructible')){ log(`${nm(t)}は破壊されない`); break; }
       const L={destroy:'破壊',exile:'追放',bounce:'手札に戻'};
       log(`${nm(src)}：${G.players[t.ctrl].name}の${nm(t)}を${L[e.do]}した`);
@@ -1070,6 +1108,7 @@ function applyEffect(p, src, e, pick){
     case 'damage': {
       if(e.mode==='each opponent'){ opps(p).forEach(o=>applyDamage(src,{player:o.idx},e.n,false)); break; }
       const t=auto?aiDamageTarget(p,e):pick; if(!t) break;
+      if(t.player==null && p.npc && !npcPayWard(p,t,src)) break;
       if(t.player!=null) applyDamage(src,{player:t.player},e.n,false); else applyDamage(src,{card:t},e.n,false);
       break;
     }
@@ -1092,7 +1131,7 @@ function applyEffect(p, src, e, pick){
       if(e.mode==='each') tg=p.bf.filter(c=>isCreature(c.def));
       else if(e.mode==='self') tg=(src&&src.zone==='bf')?[src]:[];
       else if(!auto) tg=pick?[pick]:[];
-      else if(e.mode==='opp') tg=oppPermanents(p,c=>isCreature(c.def)).sort((x,y)=>value(x)-value(y)).slice(0,1);
+      else if(e.mode==='opp') tg=oppPermanents(p,c=>isCreature(c.def)&&!c.def.ward).sort((x,y)=>value(x)-value(y)).slice(0,1);
       else tg=p.bf.filter(c=>isCreature(c.def)).sort((x,y)=>value(y)-value(x)).slice(0,1);
       tg=tg.filter(c=>c&&c.zone==='bf');
       tg.forEach(c=>c.p1+=e.n);
@@ -1186,7 +1225,7 @@ function pickTarget(e, src){
           if(b){ const i=+b.dataset.pk; if(sel.includes(i)) sel.splice(sel.indexOf(i),1); else { if(sel.length>=tc.multi) sel.shift(); sel.push(i); } draw(); return; }
           if(ev.target.closest('[data-pskip]')){ closeSheet(true); res(null); return; }
           if(ev.target.closest('[data-pok]')){ closeSheet(true); const v=sel.map(i=>tc.items[i].v); res(tc.multi>1?v:v[0]); }
-        }, true);
+        }, true, ()=>res(null));
     };
     draw();
   });
@@ -1198,9 +1237,27 @@ async function resolveForHuman(src, fx){
     if(e.do==='counterspell'){ log('打ち消しは手動で処理してください'); continue; }
     const pick=await pickTarget(e, src);
     if(pick===null) continue;
+    const tgt=(pick && !Array.isArray(pick) && pick.def) ? pick : null;
+    if(tgt && tgt.zone==='bf' && tgt.ctrl!==0 && tgt.def.ward){
+      const ok=await humanPayWard(tgt, src);
+      if(!ok){ log(`${nm(src)}は${nm(tgt)}の護法により打ち消された`); break; }
+    }
     applyEffect(p, src, e, pick===undefined && targetCands(e,src)===null ? undefined : pick);
   }
   render();
+}
+async function humanPayWard(t, src){
+  const p=ME(); const w=t.def.ward;
+  const lbl = w.mana ? `${w.mana}を支払う（自動）` : w.life!=null ? `${w.life}点のライフを支払う` : w.discard ? `カードを${w.discard}枚捨てる（手動で捨てた）` : '支払った（手動）';
+  const r=await choiceSheet(`<h3>護法</h3><p><b>${esc(nm(t))}</b>は護法（${esc(wardText(w))}）を持っています。支払わないと${esc(nm(src))}は打ち消されます。</p>`, [lbl,'支払わない（打ち消される）'], 1);
+  if(r!==0) return false;
+  if(w.mana){
+    const pay=findPayment(w.mana, [...poolSources(p), ...manaSources(p)], 0);
+    if(!pay){ const r2=await choiceSheet(`<h3>マナが足りません</h3><p class="dim">護法 ${esc(w.mana)} を自動で支払えませんでした。</p>`, ['手動で支払った','支払わない（打ち消される）'], 1); return r2===0; }
+    applyPayment(pay);
+  } else if(w.life!=null){ p.life-=w.life; checkSBA(); }
+  log(`あなたは${nm(t)}の護法（${wardText(w)}）を支払った`);
+  return true;
 }
 function pendingSheet(){
   const list=G.pending;
@@ -1258,7 +1315,7 @@ function npcUsePW(p){
     const a=minus||plus; if(!a) continue;
     c.pwUsed=G.turn; c.counters.loyalty=loy+a.cost;
     log(`${p.name}は${nm(c)}の[${a.cost>0?'+':''}${a.cost}]能力を起動した${a.fx.length?`：${fxText(a.fx)}`:''}`);
-    for(const e of a.fx) applyEffect(p,c,e);
+    G.fizzle=false; for(const e of a.fx){ if(G.fizzle) break; applyEffect(p,c,e); } G.fizzle=false;
     checkSBA();
   }
 }
@@ -1277,7 +1334,8 @@ function npcChooseSpell(p){
   for(const c of p.hand){
     if(isLand(c.def)) continue;
     if(c.def.unknown || /\{X\}/.test(c.def.cost)) continue;
-    if(isInstSorc(c.def) && !npcEffectUseful(p,c.def)) continue;
+    G.evalCost=c.def.cmc||cmcOf(c.def.cost); const useful=!isInstSorc(c.def) || npcEffectUseful(p,c.def); G.evalCost=0;
+    if(!useful) continue;
     if(/\bAura\b/.test(c.def.type)){
       const okRe=(c.def.fx||[]).length && npcEffectUseful(p,c.def);
       const okGr=c.def.grant && (c.def.grant.p>0||c.def.grant.kw.length) && p.bf.some(x=>isCreature(x.def));
@@ -1300,12 +1358,12 @@ async function npcCast(p, {card, pay}){
   fireFor(p,'cast',t=>spellMatches(t.cond.filter, card.def));
   if(npcTryCounter(p, card)){ moveTo(card,'gy'); checkSBA(); return; }
   if(G.settings.confirmSpells){
-    const ok=await choiceSheet(`<h3>${esc(p.name)}が呪文を唱えた</h3>${detailHTML(card)}`, ['解決させる','打ち消す（墓地へ）']);
+    const ok=await choiceSheet(`<h3>${esc(p.name)}が呪文を唱えた</h3>${detailHTML(card)}`, ['解決させる','打ち消す（墓地へ）'], 0);
     if(ok===1){ log(`${nm(card)}は打ち消された`); moveTo(card,'gy'); return; }
   } else await beat();
   const isAuraRe=/\bAura\b/.test(card.def.type) && (card.def.fx||[]).length;
   if(isPermanentDef(card.def) && !isAuraRe){ moveTo(card,'bf'); if(/\bAura\b/.test(card.def.type)) attachAura(p,card); checkSBA(); }
-  else { for(const e of (card.def.fx||[])) if(e.do!=='counterspell') applyEffect(p,card,e); if(card.zone==='hand'||card.zone==='cz') moveTo(card,'gy'); checkSBA(); }
+  else { G.fizzle=false; for(const e of (card.def.fx||[])){ if(G.fizzle) break; if(e.do!=='counterspell') applyEffect(p,card,e); } G.fizzle=false; if(card.zone==='hand'||card.zone==='cz') moveTo(card,'gy'); checkSBA(); }
 }
 function npcPlayLand(p){
   if(p.landPlayed) return;
@@ -1473,7 +1531,7 @@ function humanBlocks(dp, ap, attacks){
             attacks.forEach(({a})=>{ if(sel[a.uid].size) m.set(a.uid,[...sel[a.uid]].map(u=>G.cards[u])); });
             closeSheet(true); resolve(m);
           }
-        }, true);
+        }, true, ()=>{ log('ブロックせずに閉じた'); resolve(new Map()); });
     };
     if(!elig.length){ log('あなたはブロックできるクリーチャーがいない'); resolve(new Map()); return; }
     draw();
@@ -1485,7 +1543,7 @@ function humanMulligan(){
     // カード詳細（戻るボタンで元の画面へ）
     const detail=(c, back)=>{
       openSheet(`${detailHTML(c)}<div class="acts"><button class="btn" data-back>戻る</button></div>`,
-        e=>{ if(e.target.closest('[data-back]')) back(); }, true);
+        e=>{ if(e.target.closest('[data-back]')) back(); }, true, ()=>back());
     };
     const ask=()=>{
       openSheet(`<h3>初手（マリガン ${p.mull}回目）</h3><div class="tiles">${p.hand.map(c=>tileHTML(c,{noact:true})).join('')}</div>
@@ -1510,11 +1568,15 @@ function humanMulligan(){
                   const t=e2.target.closest('[data-uid]');
                   if(t){ const u=+t.dataset.uid; pick.has(u)?pick.delete(u):(pick.size<nb&&pick.add(u)); bottom(); }
                   else if(e2.target.closest('[data-bot]') && pick.size===nb){ pick.forEach(u=>moveTo(G.cards[u],'lib',{bottom:true})); closeSheet(true); resolve(); }
-                }, true);
+                }, true, ()=>{
+                  const rest=p.hand.filter(c=>!pick.has(c.uid)).sort((x,y)=>(isLand(y.def)?-1:y.def.cmc)-(isLand(x.def)?-1:x.def.cmc));
+                  while(pick.size<nb && rest.length) pick.add(rest.shift().uid);
+                  pick.forEach(u=>moveTo(G.cards[u],'lib',{bottom:true})); log(`${nb}枚を自動でライブラリーの下に置いた`); resolve();
+                });
             };
             bottom();
           }
-        }, true);
+        }, true, ()=>{ setTimeout(()=>{ ask(); const k=document.querySelector('#sheet [data-keep]'); if(k) k.click(); }); });
     };
     ask();
   });
@@ -1538,14 +1600,14 @@ function tileHTML(c, o={}){
   const pt=cr?`<div class="pt ${c.dmg?'dmg':''}">${pow(c)}/${tou(c)-c.dmg}</div>`:(isPW(d)&&c.zone==='bf'?`<div class="pt">◆${c.counters.loyalty??d.loyalty}</div>`:'');
   const atk=G.ui.attack?.map[c.uid]!=null?`<div class="ab">→${esc(G.players[G.ui.attack.map[c.uid]].name)}</div>`:'';
   const nAtt=c.zone==='bf'?attachmentsOf(c).length:0;
-  const badges=[c.isCmd?'統率者':'', c.p1?`+${c.p1}`:'', nAtt?`装備${nAtt}`:'', c.attachedTo?'装着中':'', c.token?'トークン':'', (c.zone==='bf'&&cr&&c.sick&&!hasKw(c,'Haste'))?'召喚酔い':''].filter(Boolean).join(' ');
+  const badges=[c.isCmd?'統率者':'', c.def.ward&&c.zone==='bf'?'護法':'', c.p1?`+${c.p1}`:'', nAtt?`装備${nAtt}`:'', c.attachedTo?'装着中':'', c.token?'トークン':'', (c.zone==='bf'&&cr&&c.sick&&!hasKw(c,'Haste'))?'召喚酔い':''].filter(Boolean).join(' ');
   const ty=!d.thumb?`<div class="ty">${esc((d.jtype||d.type||'').slice(0,18))}</div>`:'';
   return `<div class="tile ${c.tapped?'tp':''} ${o.sel?'sel':''} ${atk||c.attacking?'atk':''}" ${o.noact?`data-uid="${c.uid}"`:`data-a="card" data-uid="${c.uid}"`}><div class="in" ${bg}>${ty}${badges?`<div class="bd">${badges}</div>`:''}${d.cost&&!d.thumb?`<div class="c">${esc(d.cost.replace(/[{}]/g,''))}</div>`:''}${pt}${d.thumb?'':`<div class="n">${esc(nm(c))}</div>`}${atk}</div>${o.count>1?`<div class="cnt">×${o.count}</div>`:''}</div>`;
 }
 function chipHTML(c){
   const d=c.def; const cr=isCreature(d);
   const nAtt=attachmentsOf(c).length;
-  return `<button class="chip ${c.tapped?'tp':''} ${c.isCmd?'cmd':''} ${c.attacking?'atk':''}" data-a="card" data-uid="${c.uid}">${nAtt?'⚔':''}${c.p1?`[+${c.p1}]`:''}${esc(nm(c))}${cr?` ${pow(c)}/${tou(c)-c.dmg}`:''}${isPW(d)?` ◆${c.counters.loyalty??''}`:''}</button>`;
+  return `<button class="chip ${c.tapped?'tp':''} ${c.isCmd?'cmd':''} ${c.attacking?'atk':''}" data-a="card" data-uid="${c.uid}">${c.def.ward?'🛡':''}${nAtt?'⚔':''}${c.p1?`[+${c.p1}]`:''}${esc(nm(c))}${cr?` ${pow(c)}/${tou(c)-c.dmg}`:''}${isPW(d)?` ◆${c.counters.loyalty??''}`:''}</button>`;
 }
 function cmdDmgLine(p){
   const e=Object.entries(p.cmdDmg).filter(([,v])=>v>0);
@@ -1656,16 +1718,20 @@ function render(){
 }
 
 /* ---------- シート（モーダル） ---------- */
-let sheetHandler=null, sheetLocked=false, sheetActs=[];
-function openSheet(html, handler, locked){
-  $('#sheet').innerHTML=html; sheetHandler=handler||null; sheetLocked=!!locked;
+let sheetHandler=null, sheetLocked=false, sheetActs=[], sheetOnClose=null;
+/* onClose: 「閉じる」を押したときの処理（選ばないと進めない画面では、安全な選択をしたことにする） */
+function openSheet(html, handler, locked, onClose){
+  $('#sheet').innerHTML=`<div class="shd"><button class="btn sec sm" data-close>閉じる ✕</button></div>`+html;
+  sheetHandler=handler||null; sheetLocked=!!locked; sheetOnClose=onClose||null;
   $('#modal').classList.remove('hidden');
+  $('#sheet').scrollTop=0;
 }
-function closeSheet(force){ if(sheetLocked && !force) return; $('#modal').classList.add('hidden'); sheetHandler=null; sheetLocked=false; }
-function choiceSheet(html, labels){
+function closeSheet(force){ if(sheetLocked && !force) return; $('#modal').classList.add('hidden'); sheetHandler=null; sheetLocked=false; sheetOnClose=null; }
+function choiceSheet(html, labels, cancelIdx){
+  const ci = cancelIdx==null ? labels.length-1 : cancelIdx;
   return new Promise(res=>{
-    openSheet(html+`<div class="acts">${labels.map((l,i)=>`<button class="btn ${i?'sec':''}" data-ch="${i}">${esc(l)}</button>`).join('')}</div>`,
-      e=>{ const t=e.target.closest('[data-ch]'); if(t){ closeSheet(true); res(+t.dataset.ch); } }, true);
+    openSheet(html+`<div class="acts">${labels.map((l,i)=>`<button class="btn ${i?'sec':''}" data-ch="${i}">${esc(l)}</button>`).join('')}</div><p class="dim">「閉じる」は「${esc(labels[ci])}」と同じ扱いです。</p>`,
+      e=>{ const t=e.target.closest('[data-ch]'); if(t){ closeSheet(true); res(+t.dataset.ch); } }, true, ()=>res(ci));
   });
 }
 function actSheet(html, acts){
@@ -1674,6 +1740,7 @@ function actSheet(html, acts){
     e=>{ const t=e.target.closest('[data-act]'); if(!t) return; const f=sheetActs[+t.dataset.act][1]; const keep=f(); if(keep!=='keep') closeSheet(); render(); });
 }
 $('#modal').addEventListener('click', e=>{
+  if(e.target.closest('[data-close]')){ const f=sheetOnClose; closeSheet(true); if(f) f(); render(); return; }
   if(e.target.id==='modal'){ closeSheet(); return; }
   if(sheetHandler) sheetHandler(e);
 });
@@ -1690,6 +1757,7 @@ function detailHTML(c){
     ${st?`<div class="dim" style="margin-top:4px">${esc(st)}</div>`:''}
     ${c.zone==='bf'&&attachmentsOf(c).length?`<div class="dim">つけられている：${attachmentsOf(c).map(a=>esc(nm(a))).join('、')}</div>`:''}
     ${c.attachedTo&&G.cards[c.attachedTo]?`<div class="dim">${esc(nm(G.cards[c.attachedTo]))}についている</div>`:''}
+    ${c.def.ward?`<div style="color:var(--gold);font-size:12px">護法：${esc(wardText(c.def.ward))}</div>`:''}
     ${(c.def.fx||[]).length?`<div class="dim">自動処理：${esc(fxText(c.def.fx))}</div>`:''}
     <div class="dim">オーナー：${esc(G.players[c.owner].name)}</div>`;
 }
